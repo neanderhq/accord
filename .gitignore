@@ -1,0 +1,24 @@
+.git
+.neander-creation.json*
+.env
+.env.*
+!.env.example
+**/node_modules
+**/.next
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.tsbuildinfo
+
+# Root-local development dependencies and generated output
+/node_modules/
+/.next/
+/.pnpm-store/
+/*.tsbuildinfo
+
+# Copied from locked pdfjs-dist during predev/prebuild
+/public/pdfjs/
+
+# Scripted browser QA output
+/qa-evidence/
