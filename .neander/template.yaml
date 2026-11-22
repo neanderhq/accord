@@ -1,0 +1,34 @@
+contract_version: 1
+id: accord
+title: Accord
+description: |
+  **Prepare, send and track documents for signature.**
+
+  Accord is a company e-signature workspace with PDF field placement, sequential or parallel routing, recipient signing, envelope tracking and signed-PDF evidence receipts.
+
+  Explore fictional agreements, contacts and an archived envelope. DOCX conversion supports basic text, table grids and explicit page breaks; upload a PDF when exact document presentation is required. Email, webhooks and unattended scheduling use your own provider configuration.
+category: Documents & E-signatures
+best_for: Small teams preparing agreements and managing document signatures
+features:
+  - PDF documents and signature field placement
+  - Sequential and parallel recipient routing
+  - Signing consent and signed-PDF evidence receipts
+  - Active, archived and deleted envelope filters with CSV export
+  - Contacts, reusable templates and company roles
+  - Delivery logs, reminders and recovery exports
+included:
+  - E-signature application
+  - PostgreSQL migrations
+  - Fictional agreements, contacts and staff accounts
+  - Email, scheduler and DOCX limitations guide
+thumbnail: .neander/thumbnail.png
+screenshots:
+  - .neander/screenshots/archived.png
+  - .neander/screenshots/agreement.png
+commands:
+  install: [pnpm, install, --frozen-lockfile]
+  check: [pnpm, run, check]
+  test: [pnpm, run, test]
+  verify: [pnpm, run, test:template]
+seed:
+  command: [pnpm, run, db:seed]
