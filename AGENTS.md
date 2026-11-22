@@ -1,24 +1,23 @@
-# Project setup
+# Development guidance
 
-Read `README.md` for runtime versions and existing development/check/build commands.
-Accord requires PostgreSQL and server configuration. Use the current README and isolated test databases; the published client workspace is never a test fixture.
-When persistence is requested, follow `.neander/blocks/drizzle/README.md` for dependencies, local PostgreSQL setup, migrations and CRUD/restart verification.
-Copy the development Compose example to the root only when installing that block; preserve existing files and database data.
-Keep local credentials in gitignored `.env.local`. Production uses the separate managed Neon recipe contract.
-Report local database checks separately from managed Neon and production deployment proof.
-
-When adding database/auth capabilities, merge the block's complete `.neander/compose.yaml.example` in the same change. Read `docs/deployment-contract.md`; preserve the static-valid recipe fast path. Include explicit `provider: null` for user/generated requirements. Keep the public health endpoint available. Do not invent a Neon-hostname guard for a generic PostgreSQL block or weaken existing application-specific restrictions. Always scope local Docker Compose with an explicit unique `-p` and `-f`.
-
-When installing Better Auth, use the pinned `auth` CLI to generate `server/auth-schema.ts`; do not hand-author its tables. Export that schema from `server/schema.ts`, then use Drizzle Kit to generate and commit the SQL migration. Do not use `auth migrate` with the Drizzle adapter. Apply the committed migration before running `.neander/check-auth.mjs`; that script verifies runtime behavior only.
-
-## Development setup
-
-- Structure: `app/` owns Next.js pages and HTTP routes; `components/` and `lib/` contain shared UI and utilities. Optional database/authentication examples live in `.neander/blocks/`; deployment requirements are described in `docs/deployment-contract.md`.
-- Runtime and package-manager pins are in `mise.toml`, with compatibility requirements in `package.json`.
-- Run the existing entry points from the repository root: `pnpm install --frozen-lockfile` for dependencies, `pnpm dev` for development, `pnpm check` for TypeScript checks, and `pnpm build` for standalone production output. `pnpm start` runs that built output. Run the existing unit and PostgreSQL integration suites; a type check is not an integration test.
-- The development target binds to loopback. Neander owns the preview process lifecycle; use its preview runner rather than an unregistered shell server.
-- PostgreSQL is opt-in, not part of the base starter. Once the inspected development Compose example is installed as `compose.dev.yaml`, scope every invocation to `docker compose -p team_esignature_dev -f compose.dev.yaml`; its named volume preserves development data. Never reset or remove that volume as a setup shortcut. Keep real local environment values in ignored `.env.local`, not documentation or source.
-- Team eSignature development uses synthetic identities and documents only. Publishing, paid provisioning, and email to real recipients require separate authorization. Database, authentication, email, document conversion, scheduling, and recovery each need independent implementation and validation; the starter build is not evidence of those capabilities.
+- Read `README.md`, `docs/development.md` and `docs/testing.md` for setup and checks.
+- Use feature branches and PRs. Preserve CI and maintainer review requirements.
+- Run `pnpm verify` and relevant production/integration tests for code changes.
+- Keep credentials in ignored environment files, never source, logs or evidence.
+- Keep `.neander/compose.yaml`, committed migrations and runtime requirements in
+  sync. Preserve the public health route, existing template IDs and MIT license.
+- Use isolated PostgreSQL databases and fictional identities/documents for tests.
+  Never seed, reset or run verification against a customer workspace/database.
+- Scope local Docker Compose commands with an explicit unique `-p` and `-f`;
+  preserve existing development files, volumes and data.
+- Generate Better Auth tables with the pinned `auth` CLI, then generate/commit
+  Drizzle SQL migrations. Do not hand-author auth tables or use `auth migrate`
+  with the Drizzle adapter. Apply migrations before `.neander/check-auth.mjs`.
+- Keep existing deployment provider requirements (`provider: null` where required)
+  and the recipe validation fast path; do not add generic Neon-hostname restrictions.
+- Report local/CI checks separately from managed Neon, Cloud Run and desktop
+  Neander Publish verification. Publish without bypassing protected-main rules.
+- Before Next.js changes, read the relevant installed `node_modules/next/dist/docs/` guide.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
