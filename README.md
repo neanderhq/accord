@@ -93,3 +93,7 @@ Public GitHub CI runs app tests/integration and native Linux/amd64 image verific
 ## License
 
 MIT. Third-party UI foundation notices remain in [public/neander-foundation-LICENSE.txt](public/neander-foundation-LICENSE.txt).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for private vulnerability reporting and the automated security checks.
