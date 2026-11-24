@@ -10,14 +10,42 @@ export type Field = z.infer<typeof fieldInput>;
 export const draftInput = z.object({ version: z.number().int().positive(), title: z.string().trim().min(1).max(160), routing: z.enum(["parallel", "sequential"]), folder: z.string().trim().max(60).default(""), tags: z.array(z.string().trim().min(1).max(30)).max(10).default([]), recipients: z.array(recipientInput).max(10), fields: z.array(fieldInput).max(200) });
 export function fieldInside(f: Field, p: Geometry) { return f.x >= p.x && f.y >= p.y && f.x + f.width <= p.x + p.width + 0.01 && f.y + f.height <= p.y + p.height + 0.01; }
 export const valuesInput = z.record(z.string(), z.union([z.string().max(20000).refine(v=>{if(typeof v==="string" && isDrawing(v)){try{parseDrawing(v);return true;}catch{return false;}}return v.length<=500&&/^[\x20-\x7e\u00a0-\u00ff\u2018\u2019\u201c\u201d\u2013\u2014\u2026\u20ac]*$/.test(v);},"Use Western European characters (letters with accents are fine) or a valid bounded drawn signature"), z.boolean()]));
-export function validateValues(fields: Field[], values: Record<string,string|boolean>) {
-  if (Object.keys(values).some(id => !fields.some(f => f.id === id))) throw new Error("A field is not assigned to this recipient");
-  for (const f of fields) {
-    const v = values[f.id];
-    if(typeof v==="string" && isDrawing(v)){if(!["signature","initials"].includes(f.type))throw new Error("Drawings are only valid for signatures and initials");parseDrawing(v);continue;}
-    if (v === undefined && !f.required) continue;
-    if (f.type === "checkbox") { if (typeof v !== "boolean" || (f.required && !v)) throw new Error("Required checkbox must be checked"); }
-    else if (typeof v !== "string" || (f.required && !v.trim()) || (f.type === "date" && v && (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v)) || new Date(v).toISOString().slice(0,10)!==v))) throw new Error("Complete all required fields with valid values");
+export class SigningFieldError extends Error {
+  constructor(public readonly fieldId: string, message: string) {
+    super(message);
+    this.name = "SigningFieldError";
+  }
+}
+
+export function validateValues(fields: Field[], values: Record<string, string | boolean>) {
+  if (Object.keys(values).some(id => !fields.some(field => field.id === id))) {
+    throw new Error("A field is not assigned to this recipient");
+  }
+  for (const field of fields) {
+    const value = values[field.id];
+    if (typeof value === "string" && isDrawing(value)) {
+      if (field.type !== "signature" && field.type !== "initials") {
+        throw new SigningFieldError(field.id, "Drawings are only valid for signatures and initials");
+      }
+      try {
+        parseDrawing(value);
+      } catch (error) {
+        throw new SigningFieldError(field.id, error instanceof Error ? error.message : "Enter a valid drawing");
+      }
+      continue;
+    }
+    if (value === undefined && !field.required) continue;
+    if (field.type === "checkbox") {
+      if (typeof value !== "boolean" || (field.required && !value)) {
+        throw new SigningFieldError(field.id, "Required checkbox must be checked");
+      }
+      continue;
+    }
+    if (typeof value !== "string" || (field.required && !value.trim()) ||
+        (field.type === "date" && value && (!/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+          Number.isNaN(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value))) {
+      throw new SigningFieldError(field.id, "Complete all required fields with valid values");
+    }
   }
 }
 

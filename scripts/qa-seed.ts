@@ -77,7 +77,10 @@ async function ensureAccount(c: { query: any }, companyId: string, role: Account
   }
   const membership = (await c.query("SELECT 1 FROM memberships WHERE company_id=$1 AND user_id=$2 LIMIT 1", [companyId, userId])).rowCount;
   if (!membership) await c.query("INSERT INTO memberships(company_id,user_id,role) VALUES($1,$2,$3)", [companyId, userId, role]);
-  await c.query("UPDATE account SET password=$2,updated_at=now() WHERE user_id=$1", [userId, passwordHash]);
+  const credential = await c.query("UPDATE account SET password=$2,updated_at=now() WHERE user_id=$1 AND provider_id='credential'", [userId, passwordHash]);
+  if (!credential.rowCount) {
+    await c.query("INSERT INTO account(id,account_id,provider_id,user_id,password,updated_at) VALUES($1,$2,'credential',$2,$3,now())", [randomUUID(), userId, passwordHash]);
+  }
   return { companyId, userId, role, email };
 }
 

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert,AlertTitle,AlertDescription } from "@/components/ui/alert";
 import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 const emptyWorkspace: WorkspaceView = {company:{id:"",name:"Team workspace"},role:"",userId:"",envelopes:[],verificationOnly:true,developmentLinks:false};
 import type { WorkspaceView } from "@/lib/ui-types";
 export class ApiError extends Error {constructor(message:string,public code:string,public status:number){super(message);}}
@@ -19,12 +20,27 @@ export function Status({state}:{state:string}){return <Badge variant="outline" c
 const nav=[{label:"Overview",href:"/",icon:LayoutDashboard},{label:"Envelopes",href:"/envelopes",icon:Files},{label:"Team",href:"/team",icon:Users}];
 export function Shell({children,workspace=emptyWorkspace,demo=false,loading=false,error}:{children:ReactNode;workspace?:WorkspaceView;demo?:boolean;loading?:boolean;error?:ApiError|null}) {
  const path=usePathname(),[mobile,setMobile]=useState(false);
+ useEffect(() => {
+   const desktop = window.matchMedia("(min-width: 901px)");
+   const closeOnDesktop = () => { if (desktop.matches) setMobile(false); };
+   desktop.addEventListener("change", closeOnDesktop);
+   return () => desktop.removeEventListener("change", closeOnDesktop);
+ }, []);
+ const closeMenu = () => setMobile(false);
  if(loading||error?.status===401)return <main className="login-page"><Link href="/" className="brand"><span className="brand-icon"><PenLine size={21}/></span>Accord</Link>{loading?<div className="space-y-3" aria-live="polite"><Skeleton className="h-10 w-72"/><Skeleton className="h-40 w-full"/><p>Loading your workspace…</p></div>:<CardSetup error={error!}/>}</main>;
- return <div className="app-layout"><aside className={`app-sidebar ${mobile?"mobile-open":""}`}><Link href="/" className="brand"><span className="brand-icon"><PenLine size={21}/></span><span>Accord</span></Link>
+ const sidebar = (className = "app-sidebar") => <aside className={className}><Link href="/" className="brand" onClick={closeMenu}><span className="brand-icon"><PenLine size={21}/></span><span>Accord</span></Link>
  <div className="workspace-switch"><span className="avatar avatar-company">{(workspace.company.name.trim()[0]??"A").toUpperCase()}</span><div><strong>{workspace.company.name.replace(" (Synthetic)","")}</strong><small>{demo?"Synthetic workspace":workspace.role+" workspace"}</small></div><ChevronDown size={14}/></div>
- <p className="nav-caption">WORKSPACE</p><nav aria-label="Main navigation">{nav.map(n=><Link key={n.href} onClick={()=>setMobile(false)} href={n.href} className={path===n.href||(n.href==="/envelopes"&&path.startsWith("/envelopes/"))?"active":""}><n.icon size={18}/>{n.label}{n.label==="Envelopes"&&<span className="nav-count">{workspace.envelopes.length}</span>}</Link>)}</nav>
- <div className="sidebar-bottom"><div className="trust-note"><ShieldCheck size={19}/>{workspace.verificationOnly?<><strong>Verification workspace</strong><p>Synthetic documents and identities. Email dispatch is off.</p></>:<><strong>Live workspace</strong><p>Email dispatch is on. Recipients receive secure signing links by email.</p></>}<Link href="/settings">View setup status <ArrowUpRight size={13}/></Link></div><Link href="/settings" className="settings-link"><Settings size={18}/>Settings & integrations</Link><div className="user-block"><span className="avatar">{demo?"SY":"ME"}</span><div><strong>{demo?"Synthetic preview":"Your workspace"}</strong><small>{demo?"Display only":workspace.role}</small></div>{!demo&&<Button variant="ghost" size="icon" aria-label="Sign out" onClick={async()=>{await api("/api/auth/sign-out",{method:"POST",body:"{}"});location.href="/login";}}><LogOut/></Button>}</div></div></aside>
- <div className="app-main"><header className="topbar"><Button variant="ghost" size="icon" className="mobile-menu" aria-label="Toggle menu" onClick={()=>setMobile(!mobile)}><Menu/></Button><span className="breadcrumb">Workspace <span>/</span> <strong>{path.startsWith("/envelopes")?"Envelopes":path==="/"?"Overview":path.slice(1)}</strong></span><div className="topbar-right"><Badge variant="outline"><span className="status-dot"/>{workspace.verificationOnly?"Verification mode":"Email live"}</Badge><Link href="/settings" aria-label="Workspace setup"><Settings size={18}/></Link></div></header>
+ <p className="nav-caption">WORKSPACE</p><nav aria-label="Main navigation">{nav.map(n=><Link key={n.href} onClick={closeMenu} href={n.href} className={path===n.href||(n.href==="/envelopes"&&path.startsWith("/envelopes/"))?"active":""}><n.icon size={18}/>{n.label}{n.label==="Envelopes"&&<span className="nav-count">{workspace.envelopes.length}</span>}</Link>)}</nav>
+ <div className="sidebar-bottom"><div className="trust-note"><ShieldCheck size={19}/>{workspace.verificationOnly?<><strong>Verification workspace</strong><p>Synthetic documents and identities. Email dispatch is off.</p></>:<><strong>Live workspace</strong><p>Email dispatch is on. Recipients receive secure signing links by email.</p></>}<Link href="/settings" onClick={closeMenu}>View setup status <ArrowUpRight size={13}/></Link></div><Link href="/settings" className="settings-link" onClick={closeMenu}><Settings size={18}/>Settings & integrations</Link><div className="user-block"><span className="avatar">{demo?"SY":"ME"}</span><div><strong>{demo?"Synthetic preview":"Your workspace"}</strong><small>{demo?"Display only":workspace.role}</small></div>{!demo&&<Button variant="ghost" size="icon" aria-label="Sign out" onClick={async()=>{await api("/api/auth/sign-out",{method:"POST",body:"{}"});location.href="/login";}}><LogOut/></Button>}</div></div></aside>;
+ return <div className="app-layout">{sidebar()}
+ <div className="app-main"><header className="topbar"><Dialog open={mobile} onOpenChange={setMobile}>
+   <DialogTrigger asChild><Button variant="ghost" size="icon" className="mobile-menu" aria-label="Toggle menu"><Menu/></Button></DialogTrigger>
+   <DialogContent className="mobile-workspace-menu top-0 left-0 flex h-dvh w-[min(248px,100vw)] max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-y-auto rounded-none border-0 p-0 sm:max-w-none">
+     <DialogTitle className="sr-only">Workspace menu</DialogTitle>
+     <DialogDescription className="sr-only">Navigate your Accord workspace.</DialogDescription>
+     {sidebar("app-sidebar mobile-open")}
+   </DialogContent>
+ </Dialog><span className="breadcrumb">Workspace <span>/</span> <strong>{path.startsWith("/envelopes")?"Envelopes":path==="/"?"Overview":path.slice(1)}</strong></span><div className="topbar-right"><Badge variant="outline"><span className="status-dot"/>{workspace.verificationOnly?"Verification mode":"Email live"}</Badge><Link href="/settings" aria-label="Workspace setup"><Settings size={18}/></Link></div></header>
  <main className="content-area">{loading?<div className="space-y-3" aria-live="polite"><Skeleton className="h-10 w-72"/><Skeleton className="h-40 w-full"/><p>Loading your workspace…</p></div>:error?<CardSetup error={error}/>:children}</main><footer className="app-footer"><span>Accord</span><span>Private documents. Clear evidence.</span></footer></div></div>;
 }
 export function PageHeading({eyebrow,title,description,action}:{eyebrow?:string;title:string;description:string;action?:ReactNode}){return <div className="page-heading"><div>{eyebrow&&<p className="eyebrow">{eyebrow}</p>}<h1>{title}</h1><p>{description}</p></div>{action}</div>;}

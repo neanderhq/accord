@@ -2,12 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 
-const BASE_URL = "http://127.0.0.1:3000";
+const BASE_URL = process.env.ACCORD_WALKTHROUGH_ORIGIN || "http://127.0.0.1:3000";
+if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(BASE_URL).hostname)) throw new Error("Use an isolated loopback Accord instance");
 const PASSWORD = "QaBrowser-2026";
 const TIMEOUT = Number(process.env.QA_TIMEOUT_MS || 30_000);
-const EVIDENCE = "qa-evidence";
+const EVIDENCE = process.env.ACCORD_WALKTHROUGH_EVIDENCE || "qa-evidence";
 const DOWNLOADS = path.join(EVIDENCE, "downloads");
-const CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const CHROME_PATH = process.env.ACCORD_WALKTHROUGH_CHROME || (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : undefined);
+const PHONE_OPTIONS = { viewport: { width: 375, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true };
 
 const results = [];
 const state = {};
@@ -125,8 +127,11 @@ async function links(browserContext, envelope) {
 async function consent(page) {
   await expectText(page, "Electronic consent");
   if (await page.getByRole("button", { name: "Confirm consent" }).isVisible().catch(() => false)) {
-    await page.getByRole("checkbox", { name: "I agree to the electronic consent above." }).check();
-    await page.getByRole("button", { name: "Confirm consent" }).click();
+    const agreement = page.getByRole("checkbox", { name: "I agree to the electronic consent above." });
+    const confirmation = page.getByRole("button", { name: "Confirm consent" });
+    await agreement.check();
+    if (!await confirmation.isEnabled()) throw new Error("Consent confirmation did not activate after checking the agreement");
+    await confirmation.press("Enter");
     await expectText(page, "Consent recorded");
   }
 }
@@ -576,14 +581,17 @@ await scenario("D25", "Access-code lockout then admin soft delete", async () => 
   await mustSend(await pageOf(admin), "POST", "/api/manage/lifecycle", { envelopeId: envelope.id, action: "delete", reason: "QA lockout cleanup" });
 });
 
-const mobileSender = await signIn("qa-sender@flowco.test", { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+const mobileSenderContext = await newContext({ ...PHONE_OPTIONS, storageState: await sender.browser.storageState() });
+const mobileSender = { browser: mobileSenderContext, page: await mobileSenderContext.newPage() };
+mobileSender.page.setDefaultTimeout(TIMEOUT);
 
 await scenario("M1", "Mobile login/dashboard and collapsed navigation", async () => {
   const page = await pageOf(mobileSender);
   await page.goto(`${BASE_URL}/`);
   await expectText(page, "Every signature");
   await page.getByRole("button", { name: "Toggle menu" }).click();
-  await expectText(page, "Envelopes");
+  const menu = page.getByRole("dialog", { name: "Workspace menu" });
+  await menu.getByRole("link", { name: /^Envelopes/ }).waitFor();
   await shot(page, "M1");
 });
 
@@ -597,13 +605,15 @@ await scenario("M2", "Mobile signing on reissued envelope", async () => {
     reissued = (await requestJson(senderPage, `/api/envelopes/${frozen.id ?? reissued.id}`)).body;
   }
   const mobileLinks = (await links(sender, reissued)).links;
-  const mobile = await signIn("qa-sender@flowco.test", { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
-  const page = mobile.page;
+  const mobile = await newContext(PHONE_OPTIONS);
+  const page = await mobile.newPage();
+  page.setDefaultTimeout(TIMEOUT);
   await page.goto(`${BASE_URL}${mobileLinks[0].path}`);
   await accessGate(page, "Avery-code-123");
   await fillTyped(page, "Avery Morgan");
   await submitSigning(page);
   await shot(page, "M2");
+  await mobile.close();
 });
 
 await scenario("M3", "Mobile settings and dashboard filters usable", async () => {
@@ -614,6 +624,90 @@ await scenario("M3", "Mobile settings and dashboard filters usable", async () =>
   await page.getByRole("button", { name: "Additional filters" }).click();
   await page.getByLabel("Created from").fill(new Date().toISOString().slice(0, 10));
   await shot(page, "M3");
+});
+
+
+async function fits(page) {
+  const geometry = await page.evaluate(() => ({viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth}));
+  if (geometry.viewport !== 375 || geometry.content > 375) throw new Error(JSON.stringify(geometry));
+}
+await scenario("M4", "At 375 CSS pixels dashboard, composer and settings fit", async () => {
+  const page = mobileSender.page;
+  const draft = await envelopeByTitle(mobileSender, "QA walkthrough spare draft 1");
+  const oversized = [];
+  for (const [id, url, ready] of [
+    ["mobile-dashboard", "/", page => page.getByRole("heading", {name:"Every signature. One place."}).waitFor()],
+    ["mobile-composer", "/envelopes/"+draft.id, page => page.waitForFunction(() => document.querySelector(".pdf-frame canvas")?.width > 500 && !document.querySelector(".pdf-loading"))],
+    ["mobile-settings", "/settings", page => page.locator("#contact-name").waitFor()],
+  ]) {
+    await page.goto(BASE_URL+url);
+    await ready(page);
+    await shot(page, id);
+    try { await fits(page); } catch(error) { oversized.push(id+": "+error.message); }
+  }
+  if (oversized.length) throw new Error(oversized.join("; "));
+});
+await scenario("K1", "Phone menu opens, traps focus and restores trigger on Escape", async () => {
+  const page = mobileSender.page;
+  await page.goto(BASE_URL);
+  await expectText(page, "Every signature");
+  const toggle = page.getByRole("button", { name: "Toggle menu" });
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  const nav = page.getByRole("dialog", {name:"Workspace menu"});
+  await nav.waitFor();
+  await nav.getByRole("link", {name:"Overview"}).waitFor();
+  if (!await nav.evaluate(element => element.contains(document.activeElement))) throw new Error("Focus stayed behind the open menu");
+  await page.keyboard.press("Tab");
+  if (!await nav.evaluate(element => element.contains(document.activeElement))) throw new Error("Tab escaped the open menu");
+  await page.keyboard.press("Escape");
+  await nav.waitFor({state:"hidden"});
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Toggle menu");
+  await toggle.click();
+  await nav.getByRole("button", {name:"Close", exact:true}).click({timeout:5000});
+  await nav.waitFor({state:"hidden"});
+});
+await scenario("K2", "Composer review traps focus and restores the trigger on Escape", async () => {
+  const page = sender.page;
+  const draft = await envelopeByTitle(sender, "QA walkthrough spare draft 1");
+  await page.goto(BASE_URL+"/envelopes/"+draft.id);
+  const trigger = page.getByRole("button", {name:"Review & freeze for signing"});
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", {name:"Freeze this envelope for signing?"});
+  await dialog.waitFor();
+  for (let i=0; i<6; i++) {
+    await page.keyboard.press("Tab");
+    if (!await dialog.evaluate(element => element.contains(document.activeElement))) throw new Error("Tab focus escaped the review dialog");
+  }
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({state:"hidden"});
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("Review & freeze for signing"));
+});
+await scenario("K3", "Signer validation focuses and describes the first missing field", async () => {
+  const page = sender.page;
+  const fixture = await envelopeByTitle(sender, "QA walkthrough spare draft 1");
+  if (fixture.state === "draft") await freeze(page, fixture);
+  const link = (await links(sender, fixture)).links[0];
+  const context = await newContext(PHONE_OPTIONS);
+  try {
+    const recipient = await openRecipient(context, link.path);
+    await consent(recipient);
+    await fits(recipient);
+    const review = recipient.getByRole("button", {name:"Review & submit signature"});
+    await review.focus();
+    await recipient.keyboard.press("Enter");
+    await expectText(recipient, "Complete all required fields");
+    await shot(recipient, "mobile-required-field-error");
+    const active = recipient.locator(":focus");
+    const activeId = await active.getAttribute("id");
+    if (!activeId?.startsWith("value-")) throw new Error("Required-field error did not focus a signing control");
+    const errorId = await active.getAttribute("aria-describedby");
+    if (await active.getAttribute("aria-invalid") !== "true" || !errorId) throw new Error("Required-field error was not associated with the control");
+    if (!(await recipient.locator("#" + errorId).innerText()).includes("Complete all required fields")) throw new Error("The associated error does not describe the missing value");
+    await fillTyped(recipient);
+    await submitSigning(recipient);
+  } finally { await context.close(); }
 });
 
 await writeFile(path.join(EVIDENCE, "walkthrough-results.json"), JSON.stringify(results, null, 2));
