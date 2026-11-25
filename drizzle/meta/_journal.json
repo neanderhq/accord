@@ -43,6 +43,13 @@
       "when": 1794821678590,
       "tag": "0005_step2_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795602280154,
+      "tag": "0006_bulk_send",
+      "breakpoints": true
     }
   ]
 }

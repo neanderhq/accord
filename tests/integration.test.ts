@@ -10,6 +10,7 @@ import { syntheticPdf } from "../server/pdf";
 import * as workflow from "../server/workflow";
 import * as f from "../server/features";
 import * as automation from "../server/automation";
+import { bulkConfirm, bulkHistory, bulkPreview } from "../server/template-send";
 import { receiveWebhook } from "../server/webhook-receiver";
 import type { Principal, Access } from "../server/workflow";
 import type { Field } from "../lib/model";
@@ -257,4 +258,58 @@ test("STEP 2 features: contact import, reusable template, real DOCX conversion, 
  const log=await f.deliveryLog(admin());const mailJob=log.mail.find(v=>v.envelope_id===e.id);assert.ok(mailJob);
  assert.equal(mailJob.status,"not_configured");assert.equal(mailJob.last_error,"not delivered / provider not configured");
  await denied(f.retryDelivery(admin(),{id:mailJob.id,kind:"mail"}),"RETRY_UNSAFE");
+});
+
+async function oneSignerTemplate(owner=sender()) {
+  const fixture=await makeDraft("parallel",false,owner);
+  const signer=fixture.rs[0];
+  const fields=fixture.fields.filter(field=>field.recipientId===signer.id);
+  const envelope=await workflow.saveDraft(owner,fixture.e.id,{
+    version:fixture.e.version,title:fixture.e.title,routing:"parallel",fields,recipients:[signer],
+  });
+  const template=await f.saveTemplate(owner,{
+    envelopeId:envelope.id,name:"Synthetic roster agreement",roles:[{recipientId:signer.id,name:"Signer"}],
+  });
+  return {template,envelope,signer,fields,owner};
+}
+
+test("bulk preflight is bounded and stale-safe, and a confirmed roster is atomic and private on replay",async()=>{
+  const source=await oneSignerTemplate();
+  const templateId=source.template.id;
+  const csv="name,email\nAvery Morgan,avery-batch@client.test\nJordan Lee,jordan-batch@client.test";
+  const bad=await bulkPreview(sender(),{templateId,csv:csv+"\nDuplicate,AVERY-BATCH@CLIENT.TEST\nInvalid,wrong"});
+  assert.equal(bad.fingerprint,null);
+  assert.deepEqual(bad.rows.filter(row=>"error" in row).map(row=>row.row),[4,5]);
+  await denied(bulkPreview(sender(),{templateId,csv:"name,email\n"+Array(26).fill("A,a@client.test").join("\n")}),"CSV_ROWS");
+  await denied(bulkPreview(users["b:read-only"],{templateId,csv}),"READ_ONLY");
+  await denied(bulkPreview(users["b:admin"],{templateId,csv}),"NOT_FOUND");
+
+  const prior=await bulkPreview(sender(),{templateId,csv});
+  await workflow.saveDraft(source.owner,source.envelope.id,{
+    version:source.envelope.version,title:"Updated synthetic source",routing:"parallel",fields:source.fields,recipients:[source.signer],
+  });
+  const requestKey=randomUUID();
+  await denied(bulkConfirm(sender(),{templateId,csv,fingerprint:prior.fingerprint,requestKey}),"BATCH_REVIEW_REQUIRED");
+  assert.deepEqual(await bulkHistory(sender()),[]);
+  const preview=await bulkPreview(sender(),{templateId,csv});
+  const request={templateId,csv,fingerprint:preview.fingerprint,requestKey};
+  const [batch,replay]=await Promise.all([bulkConfirm(sender(),request),bulkConfirm(sender(),request)]);
+  assert.equal(batch.id,replay.id);
+  assert.equal(batch.entries.length,2);
+  assert.notEqual(batch.entries[0].envelope_id,batch.entries[1].envelope_id);
+  assert.ok(batch.entries.every(row=>row.state==="sent"&&row.delivery==="not_configured"));
+  await denied(bulkConfirm(sender(),{...request,csv:csv.replace("Jordan Lee","Taylor Hart")}),"BATCH_CONFLICT");
+  assert.deepEqual(await bulkHistory(users["a:other-sender"]),[]);
+  assert.deepEqual(await bulkHistory(users["b:admin"]),[]);
+  await denied(bulkHistory(users["b:read-only"]),"READ_ONLY");
+  assert.equal((await bulkHistory(admin()))[0].id,batch.id);
+
+  const ids=batch.entries.map(e=>e.envelope_id);
+  const jobs=await getPool().query("SELECT payload FROM delivery_jobs WHERE kind='signing_request' AND envelope_id=ANY($1::uuid[])",[ids]);
+  assert.equal(jobs.rowCount,2);
+  const payloads=jobs.rows.map(r=>automation.unseal<{text:string}>(r.payload));
+  const token=payloads[0].text.split("/sign/")[1];
+  const view=await workflow.signingView({token}) as {documents:{id:string}[]};
+  const otherId=(await getPool().query("SELECT id FROM documents WHERE envelope_id=ANY($1::uuid[]) AND id<>ALL($2::uuid[]) LIMIT 1",[ids,view.documents.map(d=>d.id)])).rows[0].id;
+  await denied(workflow.signingDocument({token},otherId),"NOT_FOUND");
 });

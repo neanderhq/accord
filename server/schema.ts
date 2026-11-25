@@ -29,3 +29,18 @@ export const webhookEvents=pgTable("webhook_events",{id:uuid().primaryKey().defa
 export const webhookAttempts=pgTable("webhook_attempts",{id:uuid().primaryKey().defaultRandom(),eventId:uuid("event_id").notNull().references(()=>webhookEvents.id),status:text().notNull(),createdAt:created()});
 export const jobRuns=pgTable("job_runs",{id:uuid().primaryKey().defaultRandom(),result:jsonb().notNull(),createdAt:created()});
 export const webhookReceipts=pgTable("webhook_receipts",{eventId:uuid("event_id").primaryKey(),bodyHash:text("body_hash").notNull(),createdAt:created()});
+
+export const bulkSendBatches=pgTable("bulk_send_batches",{
+  id:uuid().defaultRandom().primaryKey(),
+  companyId:uuid("company_id").notNull().references(()=>companies.id),
+  ownerId:text("owner_id").notNull().references(()=>user.id),
+  templateId:uuid("template_id").notNull().references(()=>templates.id),
+  requestKey:uuid("request_key").notNull(),
+  requestHash:text("request_hash").notNull(),
+  createdAt:created(),
+},t=>[uniqueIndex("bulk_send_request").on(t.companyId,t.ownerId,t.requestKey)]);
+export const bulkSendEntries=pgTable("bulk_send_entries",{
+  batchId:uuid("batch_id").notNull().references(()=>bulkSendBatches.id),
+  rowNumber:integer("row_number").notNull(),
+  envelopeId:uuid("envelope_id").notNull().unique().references(()=>envelopes.id),
+},t=>[uniqueIndex("bulk_send_row").on(t.batchId,t.rowNumber)]);

@@ -100,10 +100,17 @@ export async function saveDraft(p:Principal,envelopeId:string,input:unknown) {co
 });}
 export async function sendEnvelope(p:Principal,envelopeId:string,input:unknown) {
   const v=z.object({version:z.number().int().positive(),confirmed:z.literal(true),expiresInDays:z.number().int().min(1).max(30)}).parse(input);
-  return transaction(async c=>{const e=await envelope(c,p,envelopeId,true);draft(e,v.version);const rs=(await c.query("SELECT * FROM recipients WHERE envelope_id=$1",[e.id])).rows as Recipient[];
+  return transaction(async c=>{
+    const e=await envelope(c,p,envelopeId,true);
+    draft(e,v.version);
+    return freezeDraft(c,p,e,v.expiresInDays);
+  });
+}
+export async function freezeDraft(c:PoolClient,p:Principal,e:Envelope,expiresInDays:number) {
+  const rs=(await c.query("SELECT * FROM recipients WHERE envelope_id=$1",[e.id])).rows as Recipient[];
     if(process.env.NODE_ENV!=="production" && rs.some(r=>!r.email.endsWith(".test"))) fail(400,"SYNTHETIC_ONLY","Only synthetic .test recipients are allowed in verification mode.");
     await validateDraft(c,e,e.fields,rs.map(r=>({id:r.id,order:r.routing_order})),true);
-    await c.query("UPDATE envelopes SET state='sent',sent_at=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 day',version=version+1 WHERE id=$1",[e.id,v.expiresInDays]);
+    await c.query("UPDATE envelopes SET state='sent',sent_at=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 day',version=version+1 WHERE id=$1",[e.id,expiresInDays]);
     for(const r of rs) await queueSigning(c,e,r);
     await c.query("INSERT INTO envelope_lifecycle(envelope_id,retention_at) VALUES($1,clock_timestamp()+coalesce((SELECT retention_days FROM company_settings WHERE company_id=$2),365)*interval '1 day') ON CONFLICT(envelope_id) DO UPDATE SET retention_at=excluded.retention_at",[e.id,e.company_id]);
     // The activity log is evidence: record whether signing links were really dispatched by email.
@@ -111,7 +118,6 @@ export async function sendEnvelope(p:Principal,envelopeId:string,input:unknown) 
     for(const r of rs) await c.query("INSERT INTO outbox(envelope_id,recipient_id,kind,event_key,payload) VALUES($1,$2,'signature_request',$3,$4)",[e.id,r.id,`send:${e.id}:${r.id}`,JSON.stringify({email:r.email,mode:dispatch?"email":"verification_only",dispatch})]);
     await audit(c,e,p,dispatch?"sent":"sent_verification_only",{routing:e.routing,version:e.version+1,dispatch});
     return {id:e.id,state:"sent",version:e.version+1,message:dispatch?"Frozen for signing. Signing emails are queued for delivery.":"Frozen for signing. Verification outbox created; no email sent."};
-  });
 }
 export async function voidEnvelope(p:Principal,envelopeId:string,input:unknown) {const v=z.object({version:z.number().int(),reason:z.string().trim().min(3).max(500)}).parse(input);return transaction(async c=>{
   const e=await envelope(c,p,envelopeId,true);if(e.version!==v.version) fail(409,"VERSION_CONFLICT","Reload the envelope before voiding.");if(terminal.includes(e.state)||e.state==="draft") fail(409,"TERMINAL","Only active sent envelopes can be voided.");
