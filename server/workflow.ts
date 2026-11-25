@@ -100,18 +100,33 @@ export async function saveDraft(p:Principal,envelopeId:string,input:unknown) {co
 });}
 export async function sendEnvelope(p:Principal,envelopeId:string,input:unknown) {
   const v=z.object({version:z.number().int().positive(),confirmed:z.literal(true),expiresInDays:z.number().int().min(1).max(30)}).parse(input);
-  return transaction(async c=>{const e=await envelope(c,p,envelopeId,true);draft(e,v.version);const rs=(await c.query("SELECT * FROM recipients WHERE envelope_id=$1",[e.id])).rows as Recipient[];
+  return transaction(async c=>{
+    const e=await envelope(c,p,envelopeId,true);
+    draft(e,v.version);
+    return freezeDraft(c,p,e,v.expiresInDays);
+  });
+}
+export async function freezeDraft(c:PoolClient,p:Principal,e:Envelope,expiresInDays:number,verifiedSignerToken?:string) {
+  const rs=(await c.query("SELECT * FROM recipients WHERE envelope_id=$1",[e.id])).rows as Recipient[];
     if(process.env.NODE_ENV!=="production" && rs.some(r=>!r.email.endsWith(".test"))) fail(400,"SYNTHETIC_ONLY","Only synthetic .test recipients are allowed in verification mode.");
     await validateDraft(c,e,e.fields,rs.map(r=>({id:r.id,order:r.routing_order})),true);
-    await c.query("UPDATE envelopes SET state='sent',sent_at=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 day',version=version+1 WHERE id=$1",[e.id,v.expiresInDays]);
-    for(const r of rs) await queueSigning(c,e,r);
+    await c.query("UPDATE envelopes SET state='sent',sent_at=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 day',version=version+1 WHERE id=$1",[e.id,expiresInDays]);
+    if(verifiedSignerToken){
+      if(rs.length!==1)fail(409,"TEMPLATE_INVALID","A verified start requires one signer.");
+      await c.query("UPDATE recipients SET token_hash=$2 WHERE id=$1",[rs[0].id,hash(verifiedSignerToken)]);
+    }else{
+      for(const r of rs)await queueSigning(c,e,r);
+    }
     await c.query("INSERT INTO envelope_lifecycle(envelope_id,retention_at) VALUES($1,clock_timestamp()+coalesce((SELECT retention_days FROM company_settings WHERE company_id=$2),365)*interval '1 day') ON CONFLICT(envelope_id) DO UPDATE SET retention_at=excluded.retention_at",[e.id,e.company_id]);
+    if(verifiedSignerToken){
+      await audit(c,e,p,"sent",{routing:e.routing,version:e.version+1,dispatch:false,delivery:"mailbox_verified"});
+      return {id:e.id,state:"sent",version:e.version+1,message:"Ready for the verified signer."};
+    }
     // The activity log is evidence: record whether signing links were really dispatched by email.
     const dispatch=process.env.NODE_ENV==="production"&&process.env.EMAIL_DISPATCH_ENABLED==="1"&&mailConfigured();
     for(const r of rs) await c.query("INSERT INTO outbox(envelope_id,recipient_id,kind,event_key,payload) VALUES($1,$2,'signature_request',$3,$4)",[e.id,r.id,`send:${e.id}:${r.id}`,JSON.stringify({email:r.email,mode:dispatch?"email":"verification_only",dispatch})]);
     await audit(c,e,p,dispatch?"sent":"sent_verification_only",{routing:e.routing,version:e.version+1,dispatch});
     return {id:e.id,state:"sent",version:e.version+1,message:dispatch?"Frozen for signing. Signing emails are queued for delivery.":"Frozen for signing. Verification outbox created; no email sent."};
-  });
 }
 export async function voidEnvelope(p:Principal,envelopeId:string,input:unknown) {const v=z.object({version:z.number().int(),reason:z.string().trim().min(3).max(500)}).parse(input);return transaction(async c=>{
   const e=await envelope(c,p,envelopeId,true);if(e.version!==v.version) fail(409,"VERSION_CONFLICT","Reload the envelope before voiding.");if(terminal.includes(e.state)||e.state==="draft") fail(409,"TERMINAL","Only active sent envelopes can be voided.");
@@ -243,14 +258,30 @@ export async function senderDocument(p:Principal,envelopeId:string,documentId:st
   if(!d) fail(404,"NOT_FOUND","File not found.");if(hash(d.bytes)!==d.sha256) fail(500,"INTEGRITY_FAILED","Stored file hash verification failed.");await audit(c,e,p,"sender_downloaded",{documentId,sha256:d.sha256,kind:d.kind});return d;
 });}
 export async function completionView(a:Access,outputId?:string) {
-  await throttle(a);return transaction(async c=>{
-    const r=(await c.query("SELECT r.id,r.envelope_id FROM completion_links l JOIN recipients r ON r.id=l.recipient_id WHERE l.token_hash=$1 AND l.expires_at>clock_timestamp()",[hash(a.token)])).rows[0];
-    if(!r) fail(410,"COMPLETION_LINK_INVALID","This completion link is invalid or expired.");
-    const e=(await c.query("SELECT * FROM envelopes WHERE id=$1 FOR SHARE",[r.envelope_id])).rows[0] as Envelope;
-    if((await c.query("SELECT 1 FROM envelope_lifecycle WHERE envelope_id=$1 AND deleted_at IS NOT NULL",[e.id])).rowCount)fail(410,"COMPLETION_UNAVAILABLE","Completed files are unavailable.");
-    if(e.state!=="completed") fail(410,"COMPLETION_UNAVAILABLE","Completed files are unavailable.");
-    if(!outputId) return {title:e.title,outputs:(await c.query("SELECT id,name,kind,sha256,size FROM outputs WHERE envelope_id=$1 ORDER BY created_at,id",[e.id])).rows};
-    const d=(await c.query("SELECT name,bytes,sha256,kind FROM outputs WHERE id=$1 AND envelope_id=$2",[id(outputId),e.id])).rows[0];if(!d) fail(404,"NOT_FOUND","File not found.");if(hash(d.bytes)!==d.sha256) fail(500,"INTEGRITY_FAILED","Stored file hash verification failed.");await audit(c,e,{...a,userId:`completion:${r.id}`},"completion_downloaded",{outputId,sha256:d.sha256});return d;
+  await throttle(a);
+  return transaction(async c=>{
+    const digest=hash(a.token);
+    const signer=(await c.query(`SELECT r.id,r.envelope_id FROM completion_links l JOIN recipients r ON r.id=l.recipient_id
+      WHERE l.token_hash=$1 AND l.expires_at>clock_timestamp()`,[digest])).rows[0];
+    const copy=signer?null:(await c.query("SELECT envelope_id FROM completion_copies WHERE token_hash=$1",[digest])).rows[0];
+    const authorization=signer??copy;
+    if(!authorization)fail(410,"COMPLETION_LINK_INVALID","This completion link is invalid or expired.");
+    const e=(await c.query("SELECT * FROM envelopes WHERE id=$1 FOR SHARE",[authorization.envelope_id])).rows[0] as Envelope;
+    if(copy&&!(await c.query(`SELECT 1 FROM completion_copies WHERE envelope_id=$1 AND token_hash=$2
+      AND revoked_at IS NULL AND expires_at>clock_timestamp()`,[e.id,digest])).rowCount){
+      fail(410,"COMPLETION_LINK_INVALID","This completion link is invalid, expired or revoked.");
+    }
+    if(e.state!=="completed"||(await c.query("SELECT 1 FROM envelope_lifecycle WHERE envelope_id=$1 AND deleted_at IS NOT NULL",[e.id])).rowCount){
+      fail(410,"COMPLETION_UNAVAILABLE","Completed files are unavailable.");
+    }
+    if(!outputId)return {title:e.title,pdfsOnly:!!copy,outputs:(await c.query(`SELECT id,name,kind,sha256,size FROM outputs
+      WHERE envelope_id=$1 AND ($2=false OR kind='signed_pdf') ORDER BY created_at,id`,[e.id,!!copy])).rows};
+    const d=(await c.query(`SELECT name,bytes,sha256,kind FROM outputs
+      WHERE id=$1 AND envelope_id=$2 AND ($3=false OR kind='signed_pdf')`,[id(outputId),e.id,!!copy])).rows[0];
+    if(!d)fail(404,"NOT_FOUND","File not found.");
+    if(hash(d.bytes)!==d.sha256)fail(500,"INTEGRITY_FAILED","Stored file hash verification failed.");
+    await audit(c,e,{...a,userId:copy?"completion-copy":`completion:${signer.id}`},"completion_downloaded",{outputId,sha256:d.sha256});
+    return d;
   });
 }
 export async function team(p:Principal) {return transaction(async c=>{const m=await member(c,p);if(m.role!=="admin") fail(403,"ADMIN_REQUIRED","Only a company administrator can manage the team.");return (await c.query('SELECT m.id,m.user_id,m.role,m.active,u.name,u.email,(SELECT count(*)::int FROM envelopes e WHERE e.owner_id=m.user_id AND e.company_id=m.company_id) AS envelopes FROM memberships m JOIN "user" u ON u.id=m.user_id WHERE m.company_id=$1 ORDER BY u.name',[p.companyId])).rows;});}
@@ -258,7 +289,13 @@ export async function changeMember(p:Principal,input:unknown) {const v=z.object(
   // Serialize team administration before taking membership locks.
   await c.query("SELECT id FROM companies WHERE id=$1 FOR UPDATE",[id(p.companyId)]);
   const m=await member(c,p,true);if(m.role!=="admin") fail(403,"ADMIN_REQUIRED","Only administrators can change team access.");
-  const target=(await c.query("SELECT * FROM memberships WHERE id=$1 AND company_id=$2 FOR UPDATE",[v.memberId,p.companyId])).rows[0];if(!target) fail(404,"NOT_FOUND","Team member not found.");if(target.user_id===p.userId) fail(400,"SELF_CHANGE","Ask another administrator to change your own access.");
+  const target=(await c.query("SELECT * FROM memberships WHERE id=$1 AND company_id=$2",[v.memberId,p.companyId])).rows[0];if(!target) fail(404,"NOT_FOUND","Team member not found.");if(target.user_id===p.userId) fail(400,"SELF_CHANGE","Ask another administrator to change your own access.");
+  // Public intake locks the publication before checking the publisher membership.
+  if(target.role==="admin"&&(!v.active||v.role!=="admin")){
+    const links=(await c.query("UPDATE published_signing_links SET active=false WHERE company_id=$1 AND owner_id=$2 AND active RETURNING id",[p.companyId,target.user_id])).rows;
+    await c.query("UPDATE signing_link_claims SET cancelled_at=clock_timestamp() WHERE link_id=ANY($1::uuid[]) AND used_at IS NULL AND cancelled_at IS NULL",[links.map(link=>link.id)]);
+  }
+  await c.query("SELECT id FROM memberships WHERE id=$1 FOR UPDATE",[target.id]);
   if(v.reassignTo) {await c.query("UPDATE templates SET owner_id=$3 WHERE company_id=$1 AND owner_id=$2",[p.companyId,target.user_id,v.reassignTo]);const to=(await c.query("SELECT * FROM memberships WHERE user_id=$1 AND company_id=$2 AND active AND role IN ('admin','sender') FOR SHARE",[v.reassignTo,p.companyId])).rows[0];if(!to||to.user_id===target.user_id) fail(400,"OWNER_INVALID","Choose another active sender or administrator.");
     const moved=(await c.query("UPDATE envelopes SET owner_id=$3,version=version+1 WHERE company_id=$1 AND owner_id=$2 RETURNING id",[p.companyId,target.user_id,to.user_id])).rows;for(const e of moved) await audit(c,{company_id:p.companyId,id:e.id},p,"owner_reassigned",{from:target.user_id,to:to.user_id});}
   await c.query("UPDATE memberships SET active=$2,role=$3 WHERE id=$1",[target.id,v.active,v.role]);await audit(c,{company_id:p.companyId},p,"member_access_changed",{userId:target.user_id,active:v.active,role:v.role});return {updated:true};

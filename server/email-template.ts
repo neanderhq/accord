@@ -8,6 +8,8 @@ const copy: Record<string, { heading: string; action: string }> = {
   signing_request: { heading: "Signature requested", action: "Review and sign" },
   link_reissue: { heading: "Your new signing link", action: "Review and sign" },
   reminder: { heading: "Reminder: your signature is still needed", action: "Review and sign" },
+  signing_start_verification: { heading: "Confirm your email", action: "Continue to signing" },
+  external_completion_copy: { heading: "Signed PDFs are ready", action: "Download PDFs" },
   completion_copy: { heading: "Your signed documents are ready", action: "Download documents" },
   sender_notification: { heading: "Envelope update", action: "View envelope" },
   staff_invite: { heading: "You're invited to a workspace", action: "Accept invitation" },

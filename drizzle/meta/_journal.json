@@ -43,6 +43,27 @@
       "when": 1794821678590,
       "tag": "0005_step2_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795602280154,
+      "tag": "0006_bulk_send",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795602483825,
+      "tag": "0007_completion_copies",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795602753466,
+      "tag": "0008_public_signing_links",
+      "breakpoints": true
     }
   ]
 }

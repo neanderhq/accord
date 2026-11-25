@@ -10,6 +10,10 @@ import { syntheticPdf } from "../server/pdf";
 import * as workflow from "../server/workflow";
 import * as f from "../server/features";
 import * as automation from "../server/automation";
+import { bulkConfirm, bulkHistory, bulkPreview } from "../server/template-send";
+import { changeCompletionCopy, getCompletionCopy } from "../server/completion-copy";
+import { listPublications, managePublication, publicSigningPage, redeemSigningVerification, requestSigningVerification, signingVerificationStatus } from "../server/public-signing";
+import { backupExport } from "../server/recovery";
 import { receiveWebhook } from "../server/webhook-receiver";
 import type { Principal, Access } from "../server/workflow";
 import type { Field } from "../lib/model";
@@ -257,4 +261,253 @@ test("STEP 2 features: contact import, reusable template, real DOCX conversion, 
  const log=await f.deliveryLog(admin());const mailJob=log.mail.find(v=>v.envelope_id===e.id);assert.ok(mailJob);
  assert.equal(mailJob.status,"not_configured");assert.equal(mailJob.last_error,"not delivered / provider not configured");
  await denied(f.retryDelivery(admin(),{id:mailJob.id,kind:"mail"}),"RETRY_UNSAFE");
+});
+
+async function oneSignerTemplate(owner=sender()) {
+  const fixture=await makeDraft("parallel",false,owner);
+  const signer=fixture.rs[0];
+  const fields=fixture.fields.filter(field=>field.recipientId===signer.id);
+  const envelope=await workflow.saveDraft(owner,fixture.e.id,{
+    version:fixture.e.version,title:fixture.e.title,routing:"parallel",fields,recipients:[signer],
+  });
+  const template=await f.saveTemplate(owner,{
+    envelopeId:envelope.id,name:"Synthetic roster agreement",roles:[{recipientId:signer.id,name:"Signer"}],
+  });
+  return {template,envelope,signer,fields,owner};
+}
+
+test("bulk preflight is bounded and stale-safe, and a confirmed roster is atomic and private on replay",async()=>{
+  const source=await oneSignerTemplate();
+  const templateId=source.template.id;
+  const csv="name,email\nAvery Morgan,avery-batch@client.test\nJordan Lee,jordan-batch@client.test";
+  const bad=await bulkPreview(sender(),{templateId,csv:csv+"\nDuplicate,AVERY-BATCH@CLIENT.TEST\nInvalid,wrong"});
+  assert.equal(bad.fingerprint,null);
+  assert.deepEqual(bad.rows.filter(row=>"error" in row).map(row=>row.row),[4,5]);
+  await denied(bulkPreview(sender(),{templateId,csv:"name,email\n"+Array(26).fill("A,a@client.test").join("\n")}),"CSV_ROWS");
+  await denied(bulkPreview(users["b:read-only"],{templateId,csv}),"READ_ONLY");
+  await denied(bulkPreview(users["b:admin"],{templateId,csv}),"NOT_FOUND");
+
+  const prior=await bulkPreview(sender(),{templateId,csv});
+  await workflow.saveDraft(source.owner,source.envelope.id,{
+    version:source.envelope.version,title:"Updated synthetic source",routing:"parallel",fields:source.fields,recipients:[source.signer],
+  });
+  const requestKey=randomUUID();
+  await denied(bulkConfirm(sender(),{templateId,csv,fingerprint:prior.fingerprint,requestKey}),"BATCH_REVIEW_REQUIRED");
+  assert.deepEqual(await bulkHistory(sender()),[]);
+  const preview=await bulkPreview(sender(),{templateId,csv});
+  const request={templateId,csv,fingerprint:preview.fingerprint,requestKey};
+  const [batch,replay]=await Promise.all([bulkConfirm(sender(),request),bulkConfirm(sender(),request)]);
+  assert.equal(batch.id,replay.id);
+  assert.equal(batch.entries.length,2);
+  assert.notEqual(batch.entries[0].envelope_id,batch.entries[1].envelope_id);
+  assert.ok(batch.entries.every(row=>row.state==="sent"&&row.delivery==="not_configured"));
+  await denied(bulkConfirm(sender(),{...request,csv:csv.replace("Jordan Lee","Taylor Hart")}),"BATCH_CONFLICT");
+  assert.deepEqual(await bulkHistory(users["a:other-sender"]),[]);
+  assert.deepEqual(await bulkHistory(users["b:admin"]),[]);
+  await denied(bulkHistory(users["b:read-only"]),"READ_ONLY");
+  assert.equal((await bulkHistory(admin()))[0].id,batch.id);
+
+  const ids=batch.entries.map(e=>e.envelope_id);
+  const jobs=await getPool().query("SELECT payload FROM delivery_jobs WHERE kind='signing_request' AND envelope_id=ANY($1::uuid[])",[ids]);
+  assert.equal(jobs.rowCount,2);
+  const payloads=jobs.rows.map(r=>automation.unseal<{text:string}>(r.payload));
+  const token=payloads[0].text.split("/sign/")[1];
+  const view=await workflow.signingView({token}) as {documents:{id:string}[]};
+  const otherId=(await getPool().query("SELECT id FROM documents WHERE envelope_id=ANY($1::uuid[]) AND id<>ALL($2::uuid[]) LIMIT 1",[ids,view.documents.map(d=>d.id)])).rows[0].id;
+  await denied(workflow.signingDocument({token},otherId),"NOT_FOUND");
+});
+
+test("one PDF-only completion copy is issued, checked, revoked and renewed without signing authority",async()=>{
+  const fixture=await makeDraft("sequential");
+  const {e,owner,rs}=fixture;
+  const configured=await changeCompletionCopy(owner,e.id,{action:"save",email:"Archive@client.test",version:e.version});
+  assert.equal(configured.copy?.email,"archive@client.test");
+  assert.equal((await getCompletionCopy(admin(),e.id)).copy?.state,"awaiting_completion");
+  await denied(getCompletionCopy(users["b:sender"],e.id),"NOT_FOUND");
+  await denied(getCompletionCopy(users["a:other-sender"],e.id),"NOT_FOUND");
+  await denied(changeCompletionCopy(users["b:read-only"],e.id,{action:"revoke"}),"READ_ONLY");
+  await assert.rejects(changeCompletionCopy(owner,e.id,{action:"save",email:"bad address",version:configured.version}));
+  await denied(changeCompletionCopy(owner,e.id,{action:"save",email:null,version:e.version}),"VERSION_CONFLICT");
+  const getJobs=async()=>(await getPool().query("SELECT * FROM delivery_jobs WHERE envelope_id=$1 AND kind='external_completion_copy' ORDER BY created_at",[e.id])).rows;
+  assert.equal((await getJobs()).length,0);
+  await workflow.sendEnvelope(owner,e.id,{version:configured.version,confirmed:true,expiresInDays:7});
+  await denied(changeCompletionCopy(owner,e.id,{action:"save",email:null,version:configured.version}),"FROZEN");
+  const links=await workflow.verificationLinks(owner,e.id);
+  for(const [i,r] of rs.entries()){
+    const access={token:links.links[i].path.split("/").at(-1)!};
+    await workflow.consent(access);
+    await workflow.submit(access,payload(fixture,r.id));
+    assert.equal((await getJobs()).length,i);
+  }
+  const [job]=await getJobs();
+  const token=automation.unseal(job.payload).text.match(/\/complete\/([\w-]+)/)?.[1];
+  assert.ok(token);
+  const view=await workflow.completionView({token});
+  assert.equal(view.pdfsOnly,true);
+  assert.equal(view.outputs.length,2);
+  for(const output of view.outputs){
+    const d=await workflow.completionView({token},output.id);
+    assert.equal(d.kind,"signed_pdf");
+    assert.equal(hash(d.bytes),output.sha256);
+  }
+  const complete=await workflow.getEnvelope(owner,e.id);
+  await denied(workflow.completionView({token},complete.outputs.find((entry:any)=>entry.kind==="receipt")!.id),"NOT_FOUND");
+  await denied(workflow.completionView({token},complete.documents[0].id),"NOT_FOUND");
+  await denied(workflow.signingView({token}),"LINK_INVALID");
+  await denied(changeCompletionCopy(admin(),e.id,{action:"renew"}),"COPY_STILL_ACTIVE");
+  await getPool().query("UPDATE completion_copies SET expires_at=clock_timestamp()-interval '1 second' WHERE envelope_id=$1",[e.id]);
+  assert.equal((await getCompletionCopy(admin(),e.id)).copy?.state,"expired");
+  await denied(workflow.completionView({token}),"COMPLETION_LINK_INVALID");
+  await changeCompletionCopy(admin(),e.id,{action:"renew"});
+  const jobs=await getJobs();
+  assert.equal(jobs.length,2);
+  const renewed=automation.unseal(jobs[1].payload).text.match(/\/complete\/([\w-]+)/)?.[1];
+  assert.ok(renewed&&renewed!==token);
+  assert.equal((await workflow.completionView({token:renewed})).outputs.length,2);
+  await changeCompletionCopy(owner,e.id,{action:"revoke"});
+  await denied(workflow.completionView({token:renewed}),"COMPLETION_LINK_INVALID");
+  assert.equal((await workflow.getEnvelope(owner,e.id)).state,"completed");
+});
+
+async function claimToken(receipt:string|undefined) {
+  assert.ok(receipt);
+  const job=(await getPool().query("SELECT * FROM delivery_jobs WHERE event_key=$1",[`signing-start:${receipt}`])).rows[0];
+  const token=automation.unseal(job.payload).text.match(/\/start\/verify\/([\w-]+)/)?.[1];
+  assert.ok(token);
+  return {token,job};
+}
+
+test("public start verifies one private envelope per mailbox proof and respects expiry, publisher and publication state",async()=>{
+  const source=await oneSignerTemplate();
+  const publication={action:"publish",templateId:source.template.id,title:"Synthetic onboarding packet"};
+  await denied(managePublication(sender(),publication),"ADMIN_REQUIRED");
+  await denied(managePublication(users["b:admin"],publication),"NOT_FOUND");
+  const [link]=await managePublication(admin(),publication);
+  assert.equal((await listPublications(admin()))[0].id,link.id);
+  await denied(managePublication(users["b:admin"],{action:"disable",linkId:link.id}),"NOT_FOUND");
+  assert.deepEqual(await publicSigningPage(link.id,{}),{title:publication.title});
+  const first={name:"Intake Avery",email:"first@client.test"};
+  const queued=await requestSigningVerification(link.id,first,{});
+  assert.equal(queued.status,"verification_only");
+  assert.deepEqual(await requestSigningVerification(link.id,first,{}),{status:"verification_only"});
+  assert.deepEqual(await requestSigningVerification(link.id,first,{}),{status:"verification_only"});
+  await denied(requestSigningVerification(link.id,first,{}),"RATE_LIMIT");
+  const initial=await claimToken(queued.receipt);
+  assert.equal(await transaction(c=>automation.deliveryEligibility(c,initial.job,automation.unseal(initial.job.payload))),"eligible");
+  assert.equal((await getPool().query("SELECT envelope_id FROM signing_link_claims WHERE id=$1",[queued.receipt])).rows[0].envelope_id,null);
+  const results=await Promise.allSettled([redeemSigningVerification(initial.token,{}),redeemSigningVerification(initial.token,{})]);
+  const success=results.find(result=>result.status==="fulfilled");
+  const rejection=results.find(result=>result.status==="rejected");
+  assert.equal(rejection?.reason.code,"VERIFICATION_INVALID");
+  assert.ok(success);
+  const access={token:success.value.path.split("/").at(-1)!};
+  assert.notEqual(access.token,initial.token);
+  await denied(workflow.signingView({token:initial.token}),"LINK_INVALID");
+  const view=await workflow.signingView(access);
+  assert.equal(view.recipient.email,first.email);
+  assert.equal(view.documents.length,2);
+  await denied(workflow.getEnvelope(sender(),view.id),"NOT_FOUND");
+  await denied(workflow.getEnvelope(users["b:admin"],view.id),"NOT_FOUND");
+  assert.equal((await workflow.getEnvelope(admin(),view.id)).owner_id,admin().userId);
+  assert.equal((await getPool().query("SELECT count(*)::int AS n FROM delivery_jobs WHERE envelope_id=$1 AND kind='signing_request'",[view.id])).rows[0].n,0);
+
+  const expired=await requestSigningVerification(link.id,{name:"Expired Lee",email:"expired@client.test"},{});
+  const expiredToken=await claimToken(expired.receipt);
+  await getPool().query("UPDATE signing_link_claims SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",[expired.receipt]);
+  await denied(redeemSigningVerification(expiredToken.token,{}),"VERIFICATION_INVALID");
+  const pending=await requestSigningVerification(link.id,{name:"Disabled Lee",email:"disabled@client.test"},{});
+  const pendingToken=await claimToken(pending.receipt);
+  await managePublication(admin(),{action:"disable",linkId:link.id});
+  await denied(publicSigningPage(link.id,{}),"SIGNING_LINK_CLOSED");
+  await denied(redeemSigningVerification(pendingToken.token,{}),"SIGNING_LINK_CLOSED");
+  assert.equal(await transaction(c=>automation.deliveryEligibility(c,pendingToken.job,automation.unseal(pendingToken.job.payload))),"cancelled");
+  await workflow.consent(access);
+  await workflow.submit(access,{idempotencyKey:randomUUID(),values:Object.fromEntries(view.fields.map((field:Field)=>[field.id,field.type==="date"?"2026-11-25":"Intake Avery"]))});
+  assert.equal((await workflow.getEnvelope(admin(),view.id)).state,"completed");
+
+  const [republished]=await managePublication(admin(),publication);
+  assert.equal(republished.id,link.id);
+  await denied(redeemSigningVerification(pendingToken.token,{}),"VERIFICATION_INVALID");
+  const suspended=await requestSigningVerification(link.id,{name:"Suspended Lee",email:"suspended@client.test"},{});
+  const suspendedToken=await claimToken(suspended.receipt);
+  const colleague=users["a:other-sender"];
+  await workflow.changeMember(admin(),{memberId:colleague.memberId,role:"admin",active:true});
+  await workflow.changeMember(colleague,{memberId:admin().memberId,role:"admin",active:false});
+  try {
+    await denied(publicSigningPage(link.id,{}),"SIGNING_LINK_CLOSED");
+    await denied(redeemSigningVerification(suspendedToken.token,{}),"SIGNING_LINK_CLOSED");
+    assert.equal(await transaction(c=>automation.deliveryEligibility(c,suspendedToken.job,automation.unseal(suspendedToken.job.payload))),"cancelled");
+  } finally {
+    await workflow.changeMember(colleague,{memberId:admin().memberId,role:"admin",active:true});
+    await workflow.changeMember(admin(),{memberId:colleague.memberId,role:"sender",active:true});
+  }
+  await denied(publicSigningPage(link.id,{}),"SIGNING_LINK_CLOSED");
+  await managePublication(admin(),publication);
+  await denied(redeemSigningVerification(suspendedToken.token,{}),"VERIFICATION_INVALID");
+  await workflow.saveDraft(source.owner,source.envelope.id,{
+    version:source.envelope.version,title:"New revision",routing:"parallel",fields:source.fields,recipients:[source.signer],
+  });
+  await denied(publicSigningPage(link.id,{}),"SIGNING_LINK_CLOSED");
+  await denied(redeemSigningVerification(suspendedToken.token,{}),"SIGNING_LINK_CLOSED");
+  const a=await backupExport(admin()),b=await backupExport(users["b:admin"]);
+  assert.ok(a.tables.signing_link_claims.some(row=>row.id===queued.receipt));
+  assert.ok(a.tables.bulk_send_entries.length&&a.tables.completion_copies.length);
+  assert.equal(b.tables.signing_link_claims.length,0);
+  assert.equal(b.tables.bulk_send_entries.length,0);
+  assert.equal(b.tables.completion_copies.length,0);
+});
+
+test("configured delivery attempts record acceptance, definite failure, and retry for the three milestone jobs",async()=>{
+  const source=await oneSignerTemplate();
+  const [link]=await managePublication(admin(),{action:"publish",templateId:source.template.id,title:"Synthetic provider check"});
+  const fixture=await makeDraft("parallel");
+  const settings=["NODE_ENV","EMAIL_DISPATCH_ENABLED","RESEND_API_KEY","EMAIL_FROM","BETTER_AUTH_URL","WEBHOOK_DISPATCH_ENABLED"];
+  const saved=Object.fromEntries(settings.map(key=>[key,process.env[key]]));
+  try {
+    Object.assign(process.env,{NODE_ENV:"production",EMAIL_DISPATCH_ENABLED:"0",BETTER_AUTH_URL:"https://accord.example.test",WEBHOOK_DISPATCH_ENABLED:"0"});
+    await denied(requestSigningVerification(link.id,{name:"Fictional",email:"fictional@example.com"},{}),"VERIFICATION_DELIVERY_UNAVAILABLE");
+    Object.assign(process.env,{EMAIL_DISPATCH_ENABLED:"1",RESEND_API_KEY:"controlled-provider-fixture",EMAIL_FROM:"signed@example.com"});
+    const request=await requestSigningVerification(link.id,{name:"Fictional",email:"fictional@example.com"},{});
+    const queued=await claimToken(request.receipt);
+    assert.equal((await signingVerificationStatus(request.receipt!,{})).status,"pending");
+    const {e,owner,rs}=fixture;
+    const copy=await changeCompletionCopy(owner,e.id,{action:"save",email:"copy@example.com",version:e.version});
+    await workflow.sendEnvelope(owner,e.id,{version:copy.version,confirmed:true,expiresInDays:7});
+    const signJobs=(await getPool().query("SELECT payload FROM delivery_jobs WHERE envelope_id=$1 AND kind='signing_request' ORDER BY created_at",[e.id])).rows;
+    for(const r of rs){
+      const data=signJobs.map(row=>automation.unseal(row.payload)).find(data=>data.email===r.email);
+      const token=data.text.match(/\/sign\/([\w-]+)/)?.[1];assert.ok(token);
+      await workflow.consent({token});
+      await workflow.submit({token},payload(fixture,r.id));
+    }
+    const csv="name,email\nRejected,reject@example.com";
+    const templateId=source.template.id;
+    const preview=await bulkPreview(sender(),{templateId,csv});
+    const batch=await bulkConfirm(sender(),{templateId,csv,fingerprint:preview.fingerprint,requestKey:randomUUID()});
+    const selected=(await getPool().query("SELECT id,event_key FROM delivery_jobs WHERE id=$1 OR (envelope_id=$2 AND kind='external_completion_copy') OR (envelope_id=$3 AND kind='signing_request')",[queued.job.id,e.id,batch.entries[0].envelope_id])).rows;
+    assert.equal(selected.length,3);
+    const responseByAddress:Record<string,number>={"fictional@example.com":422,"copy@example.com":200,"reject@example.com":429};
+    const seen=new Set<string>();
+    const transport:typeof fetch=async(url,init)=>{
+      assert.equal(url,"https://api.resend.com/emails");
+      const [address]=JSON.parse(String(init?.body)).to;
+      assert.ok(address in responseByAddress);
+      assert.match(new Headers(init?.headers).get("idempotency-key")??"",/^[a-f0-9]{64}$/);
+      seen.add(address);
+      return Response.json({id:"controlled-message"},{status:responseByAddress[address]});
+    };
+    // Pick the three new jobs ahead of legacy fixture mail in the isolated integration database.
+    await getPool().query("UPDATE delivery_jobs SET created_at='2000-01-01',next_at=now() WHERE id=ANY($1::uuid[])",[selected.map(row=>row.id)]);
+    await automation.runJobs(transport);
+    assert.equal(seen.size,3);
+    assert.equal((await signingVerificationStatus(request.receipt!,{})).status,"failed");
+    assert.equal((await getCompletionCopy(admin(),e.id)).copy?.delivery,"provider_accepted");
+    assert.equal((await bulkHistory(sender())).find(row=>row.id===batch.id)?.entries[0].delivery,"retry");
+    const retried=await requestSigningVerification(link.id,{name:"Fictional",email:"fictional@example.com",retryReceipt:request.receipt},{});
+    assert.ok(retried.receipt&&retried.receipt!==request.receipt);
+    await denied(redeemSigningVerification(queued.token,{}),"VERIFICATION_INVALID");
+    assert.equal((await workflow.getEnvelope(owner,e.id)).state,"completed");
+  } finally {
+    for(const key of settings){if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];}
+  }
 });
