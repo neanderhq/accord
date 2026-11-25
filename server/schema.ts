@@ -54,3 +54,26 @@ export const completionCopies=pgTable("completion_copies",{
   revokedAt:timestamp("revoked_at",{withTimezone:true}),
   createdAt:created(),
 });
+
+export const publishedSigningLinks=pgTable("published_signing_links",{
+  id:uuid().defaultRandom().primaryKey(),
+  companyId:uuid("company_id").notNull().references(()=>companies.id),
+  ownerId:text("owner_id").notNull().references(()=>user.id),
+  templateId:uuid("template_id").notNull().unique().references(()=>templates.id),
+  templateFingerprint:text("template_fingerprint").notNull(),
+  title:text().notNull(),
+  active:boolean().notNull().default(true),
+  createdAt:created(),
+});
+export const signingLinkClaims=pgTable("signing_link_claims",{
+  id:uuid().defaultRandom().primaryKey(),
+  linkId:uuid("link_id").notNull().references(()=>publishedSigningLinks.id),
+  name:text().notNull(),
+  email:text().notNull(),
+  tokenHash:text("token_hash").notNull().unique(),
+  expiresAt:timestamp("expires_at",{withTimezone:true}).notNull(),
+  usedAt:timestamp("used_at",{withTimezone:true}),
+  cancelledAt:timestamp("cancelled_at",{withTimezone:true}),
+  envelopeId:uuid("envelope_id").unique().references(()=>envelopes.id),
+  createdAt:created(),
+},t=>[index("signing_claim_link_email").on(t.linkId,t.email)]);

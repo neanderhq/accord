@@ -14,7 +14,7 @@ export function seal(value:unknown){const iv=randomBytes(12),c=createCipheriv('a
 export function unseal<T=any>(value:string):T{if(!value.startsWith('v1.'))throw new Error('Unsupported encrypted queue format');const b=Buffer.from(value.slice(3),'base64'),d=createDecipheriv('aes-256-gcm',key(),b.subarray(0,12));d.setAuthTag(b.subarray(12,28));return JSON.parse(Buffer.concat([d.update(b.subarray(28)),d.final()]).toString());}
 export const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 export function publicOrigin(){const u=new URL(process.env.BETTER_AUTH_URL??'http://localhost:3000');if(process.env.NODE_ENV==='production'&&u.protocol!=='https:')fail(503,"ORIGIN_REQUIRED","Configure the HTTPS public application origin.");return u.origin;}
-export async function queueMail(c:PoolClient,v:{companyId:string;envelopeId?:string;recipientId?:string;kind:string;key:string;email:string;subject:string;text:string;tokenHash?:string;actionTokenId?:string}) {
+export async function queueMail(c:PoolClient,v:{companyId:string;envelopeId?:string;recipientId?:string;kind:string;key:string;email:string;subject:string;text:string;tokenHash?:string;actionTokenId?:string;signingClaimId?:string}) {
  // Returns true only when a new job was queued (the event key dedupes repeats).
  return ((await c.query("INSERT INTO delivery_jobs(company_id,envelope_id,recipient_id,kind,event_key,payload) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(event_key) DO NOTHING",[v.companyId,v.envelopeId??null,v.recipientId??null,v.kind,v.key,seal(v)])).rowCount??0)>0;
 }
@@ -67,6 +67,14 @@ export async function deliveryEligibility(c:PoolClient,job:any,payload:any):Prom
    if(!active.rowCount)return 'cancelled';
   }
  }
+ if(job.kind==='signing_start_verification'){
+  const link=(await c.query(`SELECT l.id,l.owner_id FROM published_signing_links l
+    JOIN signing_link_claims a ON a.link_id=l.id
+    WHERE a.id=$1 AND a.token_hash=$2 AND l.company_id=$3 AND l.active
+      AND a.used_at IS NULL AND a.cancelled_at IS NULL AND a.expires_at>clock_timestamp()
+    FOR SHARE OF l`,[payload.signingClaimId,payload.tokenHash,job.company_id])).rows[0];
+  if(!link||!(await c.query("SELECT 1 FROM memberships WHERE company_id=$1 AND user_id=$2 AND active AND role='admin' FOR SHARE",[job.company_id,link.owner_id])).rowCount)return 'cancelled';
+ }
  if(payload.actionTokenId){const t=(await c.query('SELECT * FROM action_tokens WHERE id=$1 FOR UPDATE',[payload.actionTokenId])).rows[0];if(!t||t.used_at||new Date(t.expires_at).getTime()<=Date.now())return 'cancelled';if(t.kind==='invite'&&!(await c.query("SELECT 1 FROM memberships WHERE company_id=$1 AND user_id=$2 AND active=true AND role='admin'",[t.company_id,t.user_id])).rowCount)return 'cancelled';}
  return 'eligible';
 }
@@ -115,7 +123,7 @@ async function scheduleJobs(c:PoolClient){
  for(const j of candidates){if(j.reminder_days===0)continue;const p=unseal(j.payload);if(await queueMail(c,{...p,subject:`Reminder: ${String(p.subject).replace(/^Reminder: /,'')}`,kind:'reminder',key:`scheduled:${j.recipient_id}:${new Date().toISOString().slice(0,10)}`}))result.reminders++;}
  return result;
 }
-export async function runJobs(){
+export async function runJobs(transport:typeof fetch=fetch){
  {
   // No session-level lock: with a transaction-pooling proxy (Neon pooler) a session advisory lock can stay held
   // on a pooled backend and block every later run. The periodic step takes a transaction-scoped lock (released
@@ -134,7 +142,7 @@ export async function runJobs(){
      const s=(await c.query('SELECT * FROM company_settings WHERE company_id=$1',[j.company_id])).rows[0],company=(await c.query('SELECT name FROM companies WHERE id=$1',[j.company_id])).rows[0];
      const name=s?.brand_name||company.name,color=/^#[a-fA-F0-9]{6}$/.test(s?.brand_color??'')?s.brand_color:'#2563eb';
      const m=renderEmail({kind:j.kind,subject:p.subject,text:p.text,company:name,brandColor:color,logo:s?.logo});
-     r=await providerSend({...p,text:m.text,html:m.html,key:j.event_key});result.mail++;
+     r=await providerSend({...p,text:m.text,html:m.html,key:j.event_key},transport);result.mail++;
     }
     const count=['retry','failed','uncertain','provider_accepted'].includes(r.status)?1:0;
     if(r.status==='retry'&&j.attempts>=4)r.status='failed';

@@ -106,13 +106,22 @@ export async function sendEnvelope(p:Principal,envelopeId:string,input:unknown) 
     return freezeDraft(c,p,e,v.expiresInDays);
   });
 }
-export async function freezeDraft(c:PoolClient,p:Principal,e:Envelope,expiresInDays:number) {
+export async function freezeDraft(c:PoolClient,p:Principal,e:Envelope,expiresInDays:number,verifiedSignerToken?:string) {
   const rs=(await c.query("SELECT * FROM recipients WHERE envelope_id=$1",[e.id])).rows as Recipient[];
     if(process.env.NODE_ENV!=="production" && rs.some(r=>!r.email.endsWith(".test"))) fail(400,"SYNTHETIC_ONLY","Only synthetic .test recipients are allowed in verification mode.");
     await validateDraft(c,e,e.fields,rs.map(r=>({id:r.id,order:r.routing_order})),true);
     await c.query("UPDATE envelopes SET state='sent',sent_at=clock_timestamp(),expires_at=clock_timestamp()+$2*interval '1 day',version=version+1 WHERE id=$1",[e.id,expiresInDays]);
-    for(const r of rs) await queueSigning(c,e,r);
+    if(verifiedSignerToken){
+      if(rs.length!==1)fail(409,"TEMPLATE_INVALID","A verified start requires one signer.");
+      await c.query("UPDATE recipients SET token_hash=$2 WHERE id=$1",[rs[0].id,hash(verifiedSignerToken)]);
+    }else{
+      for(const r of rs)await queueSigning(c,e,r);
+    }
     await c.query("INSERT INTO envelope_lifecycle(envelope_id,retention_at) VALUES($1,clock_timestamp()+coalesce((SELECT retention_days FROM company_settings WHERE company_id=$2),365)*interval '1 day') ON CONFLICT(envelope_id) DO UPDATE SET retention_at=excluded.retention_at",[e.id,e.company_id]);
+    if(verifiedSignerToken){
+      await audit(c,e,p,"sent",{routing:e.routing,version:e.version+1,dispatch:false,delivery:"mailbox_verified"});
+      return {id:e.id,state:"sent",version:e.version+1,message:"Ready for the verified signer."};
+    }
     // The activity log is evidence: record whether signing links were really dispatched by email.
     const dispatch=process.env.NODE_ENV==="production"&&process.env.EMAIL_DISPATCH_ENABLED==="1"&&mailConfigured();
     for(const r of rs) await c.query("INSERT INTO outbox(envelope_id,recipient_id,kind,event_key,payload) VALUES($1,$2,'signature_request',$3,$4)",[e.id,r.id,`send:${e.id}:${r.id}`,JSON.stringify({email:r.email,mode:dispatch?"email":"verification_only",dispatch})]);
@@ -280,7 +289,13 @@ export async function changeMember(p:Principal,input:unknown) {const v=z.object(
   // Serialize team administration before taking membership locks.
   await c.query("SELECT id FROM companies WHERE id=$1 FOR UPDATE",[id(p.companyId)]);
   const m=await member(c,p,true);if(m.role!=="admin") fail(403,"ADMIN_REQUIRED","Only administrators can change team access.");
-  const target=(await c.query("SELECT * FROM memberships WHERE id=$1 AND company_id=$2 FOR UPDATE",[v.memberId,p.companyId])).rows[0];if(!target) fail(404,"NOT_FOUND","Team member not found.");if(target.user_id===p.userId) fail(400,"SELF_CHANGE","Ask another administrator to change your own access.");
+  const target=(await c.query("SELECT * FROM memberships WHERE id=$1 AND company_id=$2",[v.memberId,p.companyId])).rows[0];if(!target) fail(404,"NOT_FOUND","Team member not found.");if(target.user_id===p.userId) fail(400,"SELF_CHANGE","Ask another administrator to change your own access.");
+  // Public intake locks the publication before checking the publisher membership.
+  if(target.role==="admin"&&(!v.active||v.role!=="admin")){
+    const links=(await c.query("UPDATE published_signing_links SET active=false WHERE company_id=$1 AND owner_id=$2 AND active RETURNING id",[p.companyId,target.user_id])).rows;
+    await c.query("UPDATE signing_link_claims SET cancelled_at=clock_timestamp() WHERE link_id=ANY($1::uuid[]) AND used_at IS NULL AND cancelled_at IS NULL",[links.map(link=>link.id)]);
+  }
+  await c.query("SELECT id FROM memberships WHERE id=$1 FOR UPDATE",[target.id]);
   if(v.reassignTo) {await c.query("UPDATE templates SET owner_id=$3 WHERE company_id=$1 AND owner_id=$2",[p.companyId,target.user_id,v.reassignTo]);const to=(await c.query("SELECT * FROM memberships WHERE user_id=$1 AND company_id=$2 AND active AND role IN ('admin','sender') FOR SHARE",[v.reassignTo,p.companyId])).rows[0];if(!to||to.user_id===target.user_id) fail(400,"OWNER_INVALID","Choose another active sender or administrator.");
     const moved=(await c.query("UPDATE envelopes SET owner_id=$3,version=version+1 WHERE company_id=$1 AND owner_id=$2 RETURNING id",[p.companyId,target.user_id,to.user_id])).rows;for(const e of moved) await audit(c,{company_id:p.companyId,id:e.id},p,"owner_reassigned",{from:target.user_id,to:to.user_id});}
   await c.query("UPDATE memberships SET active=$2,role=$3 WHERE id=$1",[target.id,v.active,v.role]);await audit(c,{company_id:p.companyId},p,"member_access_changed",{userId:target.user_id,active:v.active,role:v.role});return {updated:true};
