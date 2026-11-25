@@ -11,6 +11,7 @@ import * as workflow from "../server/workflow";
 import * as f from "../server/features";
 import * as automation from "../server/automation";
 import { bulkConfirm, bulkHistory, bulkPreview } from "../server/template-send";
+import { changeCompletionCopy, getCompletionCopy } from "../server/completion-copy";
 import { receiveWebhook } from "../server/webhook-receiver";
 import type { Principal, Access } from "../server/workflow";
 import type { Field } from "../lib/model";
@@ -312,4 +313,53 @@ test("bulk preflight is bounded and stale-safe, and a confirmed roster is atomic
   const view=await workflow.signingView({token}) as {documents:{id:string}[]};
   const otherId=(await getPool().query("SELECT id FROM documents WHERE envelope_id=ANY($1::uuid[]) AND id<>ALL($2::uuid[]) LIMIT 1",[ids,view.documents.map(d=>d.id)])).rows[0].id;
   await denied(workflow.signingDocument({token},otherId),"NOT_FOUND");
+});
+
+test("one PDF-only completion copy is issued, checked, revoked and renewed without signing authority",async()=>{
+  const fixture=await makeDraft("sequential");
+  const {e,owner,rs}=fixture;
+  const configured=await changeCompletionCopy(owner,e.id,{action:"save",email:"Archive@client.test",version:e.version});
+  assert.equal(configured.copy?.email,"archive@client.test");
+  assert.equal((await getCompletionCopy(admin(),e.id)).copy?.state,"awaiting_completion");
+  await denied(getCompletionCopy(users["b:sender"],e.id),"NOT_FOUND");
+  await denied(changeCompletionCopy(owner,e.id,{action:"save",email:null,version:e.version}),"VERSION_CONFLICT");
+  const getJobs=async()=>(await getPool().query("SELECT * FROM delivery_jobs WHERE envelope_id=$1 AND kind='external_completion_copy' ORDER BY created_at",[e.id])).rows;
+  assert.equal((await getJobs()).length,0);
+  await workflow.sendEnvelope(owner,e.id,{version:configured.version,confirmed:true,expiresInDays:7});
+  await denied(changeCompletionCopy(owner,e.id,{action:"save",email:null,version:configured.version}),"FROZEN");
+  const links=await workflow.verificationLinks(owner,e.id);
+  for(const [i,r] of rs.entries()){
+    const access={token:links.links[i].path.split("/").at(-1)!};
+    await workflow.consent(access);
+    await workflow.submit(access,payload(fixture,r.id));
+    assert.equal((await getJobs()).length,i);
+  }
+  const [job]=await getJobs();
+  const token=automation.unseal(job.payload).text.match(/\/complete\/([\w-]+)/)?.[1];
+  assert.ok(token);
+  const view=await workflow.completionView({token});
+  assert.equal(view.pdfsOnly,true);
+  assert.equal(view.outputs.length,2);
+  for(const output of view.outputs){
+    const d=await workflow.completionView({token},output.id);
+    assert.equal(d.kind,"signed_pdf");
+    assert.equal(hash(d.bytes),output.sha256);
+  }
+  const complete=await workflow.getEnvelope(owner,e.id);
+  await denied(workflow.completionView({token},complete.outputs.find((entry:any)=>entry.kind==="receipt")!.id),"NOT_FOUND");
+  await denied(workflow.completionView({token},complete.documents[0].id),"NOT_FOUND");
+  await denied(workflow.signingView({token}),"LINK_INVALID");
+  await denied(changeCompletionCopy(admin(),e.id,{action:"renew"}),"COPY_STILL_ACTIVE");
+  await getPool().query("UPDATE completion_copies SET expires_at=clock_timestamp()-interval '1 second' WHERE envelope_id=$1",[e.id]);
+  assert.equal((await getCompletionCopy(admin(),e.id)).copy?.state,"expired");
+  await denied(workflow.completionView({token}),"COMPLETION_LINK_INVALID");
+  await changeCompletionCopy(admin(),e.id,{action:"renew"});
+  const jobs=await getJobs();
+  assert.equal(jobs.length,2);
+  const renewed=automation.unseal(jobs[1].payload).text.match(/\/complete\/([\w-]+)/)?.[1];
+  assert.ok(renewed&&renewed!==token);
+  assert.equal((await workflow.completionView({token:renewed})).outputs.length,2);
+  await changeCompletionCopy(owner,e.id,{action:"revoke"});
+  await denied(workflow.completionView({token:renewed}),"COMPLETION_LINK_INVALID");
+  assert.equal((await workflow.getEnvelope(owner,e.id)).state,"completed");
 });

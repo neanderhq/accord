@@ -249,14 +249,30 @@ export async function senderDocument(p:Principal,envelopeId:string,documentId:st
   if(!d) fail(404,"NOT_FOUND","File not found.");if(hash(d.bytes)!==d.sha256) fail(500,"INTEGRITY_FAILED","Stored file hash verification failed.");await audit(c,e,p,"sender_downloaded",{documentId,sha256:d.sha256,kind:d.kind});return d;
 });}
 export async function completionView(a:Access,outputId?:string) {
-  await throttle(a);return transaction(async c=>{
-    const r=(await c.query("SELECT r.id,r.envelope_id FROM completion_links l JOIN recipients r ON r.id=l.recipient_id WHERE l.token_hash=$1 AND l.expires_at>clock_timestamp()",[hash(a.token)])).rows[0];
-    if(!r) fail(410,"COMPLETION_LINK_INVALID","This completion link is invalid or expired.");
-    const e=(await c.query("SELECT * FROM envelopes WHERE id=$1 FOR SHARE",[r.envelope_id])).rows[0] as Envelope;
-    if((await c.query("SELECT 1 FROM envelope_lifecycle WHERE envelope_id=$1 AND deleted_at IS NOT NULL",[e.id])).rowCount)fail(410,"COMPLETION_UNAVAILABLE","Completed files are unavailable.");
-    if(e.state!=="completed") fail(410,"COMPLETION_UNAVAILABLE","Completed files are unavailable.");
-    if(!outputId) return {title:e.title,outputs:(await c.query("SELECT id,name,kind,sha256,size FROM outputs WHERE envelope_id=$1 ORDER BY created_at,id",[e.id])).rows};
-    const d=(await c.query("SELECT name,bytes,sha256,kind FROM outputs WHERE id=$1 AND envelope_id=$2",[id(outputId),e.id])).rows[0];if(!d) fail(404,"NOT_FOUND","File not found.");if(hash(d.bytes)!==d.sha256) fail(500,"INTEGRITY_FAILED","Stored file hash verification failed.");await audit(c,e,{...a,userId:`completion:${r.id}`},"completion_downloaded",{outputId,sha256:d.sha256});return d;
+  await throttle(a);
+  return transaction(async c=>{
+    const digest=hash(a.token);
+    const signer=(await c.query(`SELECT r.id,r.envelope_id FROM completion_links l JOIN recipients r ON r.id=l.recipient_id
+      WHERE l.token_hash=$1 AND l.expires_at>clock_timestamp()`,[digest])).rows[0];
+    const copy=signer?null:(await c.query("SELECT envelope_id FROM completion_copies WHERE token_hash=$1",[digest])).rows[0];
+    const authorization=signer??copy;
+    if(!authorization)fail(410,"COMPLETION_LINK_INVALID","This completion link is invalid or expired.");
+    const e=(await c.query("SELECT * FROM envelopes WHERE id=$1 FOR SHARE",[authorization.envelope_id])).rows[0] as Envelope;
+    if(copy&&!(await c.query(`SELECT 1 FROM completion_copies WHERE envelope_id=$1 AND token_hash=$2
+      AND revoked_at IS NULL AND expires_at>clock_timestamp()`,[e.id,digest])).rowCount){
+      fail(410,"COMPLETION_LINK_INVALID","This completion link is invalid, expired or revoked.");
+    }
+    if(e.state!=="completed"||(await c.query("SELECT 1 FROM envelope_lifecycle WHERE envelope_id=$1 AND deleted_at IS NOT NULL",[e.id])).rowCount){
+      fail(410,"COMPLETION_UNAVAILABLE","Completed files are unavailable.");
+    }
+    if(!outputId)return {title:e.title,pdfsOnly:!!copy,outputs:(await c.query(`SELECT id,name,kind,sha256,size FROM outputs
+      WHERE envelope_id=$1 AND ($2=false OR kind='signed_pdf') ORDER BY created_at,id`,[e.id,!!copy])).rows};
+    const d=(await c.query(`SELECT name,bytes,sha256,kind FROM outputs
+      WHERE id=$1 AND envelope_id=$2 AND ($3=false OR kind='signed_pdf')`,[id(outputId),e.id,!!copy])).rows[0];
+    if(!d)fail(404,"NOT_FOUND","File not found.");
+    if(hash(d.bytes)!==d.sha256)fail(500,"INTEGRITY_FAILED","Stored file hash verification failed.");
+    await audit(c,e,{...a,userId:copy?"completion-copy":`completion:${signer.id}`},"completion_downloaded",{outputId,sha256:d.sha256});
+    return d;
   });
 }
 export async function team(p:Principal) {return transaction(async c=>{const m=await member(c,p);if(m.role!=="admin") fail(403,"ADMIN_REQUIRED","Only a company administrator can manage the team.");return (await c.query('SELECT m.id,m.user_id,m.role,m.active,u.name,u.email,(SELECT count(*)::int FROM envelopes e WHERE e.owner_id=m.user_id AND e.company_id=m.company_id) AS envelopes FROM memberships m JOIN "user" u ON u.id=m.user_id WHERE m.company_id=$1 ORDER BY u.name',[p.companyId])).rows;});}

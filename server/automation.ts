@@ -23,6 +23,20 @@ export async function queueSigning(c:PoolClient,e:any,r:any,kind='signing_reques
  await c.query("UPDATE recipients SET token_hash=$2 WHERE id=$1",[r.id,digest]);
  await queueMail(c,{companyId:e.company_id,envelopeId:e.id,recipientId:r.id,kind,key:`${kind}:${e.id}:${r.id}:${suffix}`,email:r.email,subject:`Signature requested: ${e.title}`,text:`Review and sign ${e.title}: ${publicOrigin()}/sign/${token}`,tokenHash:digest});
 }
+export async function queueCompletionCopy(c:PoolClient,e:{id:string;company_id:string;title:string},initial:boolean) {
+ const token=newToken(),digest=hash(token);
+ const copy=(await c.query(
+   `UPDATE completion_copies SET generation=generation+1,token_hash=$2,
+      expires_at=clock_timestamp()+interval '30 days',revoked_at=NULL
+      WHERE envelope_id=$1 AND ($3=false OR generation=0) RETURNING email,generation`,
+   [e.id,digest,initial],
+ )).rows[0];
+ if(!copy)return;
+ await queueMail(c,{companyId:e.company_id,envelopeId:e.id,kind:'external_completion_copy',
+   key:`external-copy:${e.id}:${copy.generation}`,email:copy.email,tokenHash:digest,
+   subject:`Completed documents: ${e.title}`,
+   text:`The signed PDFs are ready. Download within 30 days: ${publicOrigin()}/complete/${token}`});
+}
 const statusEvents=['sent','sent_verification_only','viewed','signed','completed','declined','voided','expired'];
 export async function queueStatus(c:PoolClient,e:any,event:string,eventId:string) {
  if(!e.id||!statusEvents.includes(event))return;
@@ -33,6 +47,7 @@ export async function queueStatus(c:PoolClient,e:any,event:string,eventId:string
   if(owner)await queueMail(c,{companyId:e.company_id,envelopeId:e.id,kind:'sender_notification',key:`notify:${eventId}`,email:owner.email,subject:`Envelope ${event}: ${e.title}`,text:`"${e.title}" is now ${event}. The activity record keeps every step. View the envelope: ${publicOrigin()}/envelopes/${e.id}`});
  }
  if(event==='completed')for(const r of (await c.query('SELECT id,email FROM recipients WHERE envelope_id=$1',[e.id])).rows){const token=newToken();await c.query("INSERT INTO completion_links(recipient_id,token_hash,expires_at) VALUES($1,$2,clock_timestamp()+interval '30 days')",[r.id,hash(token)]);await queueMail(c,{companyId:e.company_id,envelopeId:e.id,recipientId:r.id,kind:'completion_copy',key:`copy:${e.id}:${r.id}`,email:r.email,subject:`Completed documents: ${e.title}`,text:`Download your completed PDFs and receipt: ${publicOrigin()}/complete/${token}`});}
+ if(event==='completed')await queueCompletionCopy(c,e,true);
 }
 // Check immediately before every transport call while holding the envelope lock.
 // The same check runs for automatic and manual retries.
@@ -45,6 +60,12 @@ export async function deliveryEligibility(c:PoolClient,job:any,payload:any):Prom
    if(e.routing==='sequential'&&(await c.query("SELECT 1 FROM recipients WHERE envelope_id=$1 AND routing_order<$2 AND status<>'signed'",[e.id,r.routing_order])).rowCount)return 'waiting';
   }
   if(job.kind==='completion_copy'&&e.state!=='completed')return 'cancelled';
+  if(job.kind==='external_completion_copy'){
+   if(e.state!=='completed')return 'cancelled';
+   const active=await c.query(`SELECT 1 FROM completion_copies WHERE envelope_id=$1 AND token_hash=$2
+     AND revoked_at IS NULL AND expires_at>clock_timestamp()`,[e.id,payload.tokenHash]);
+   if(!active.rowCount)return 'cancelled';
+  }
  }
  if(payload.actionTokenId){const t=(await c.query('SELECT * FROM action_tokens WHERE id=$1 FOR UPDATE',[payload.actionTokenId])).rows[0];if(!t||t.used_at||new Date(t.expires_at).getTime()<=Date.now())return 'cancelled';if(t.kind==='invite'&&!(await c.query("SELECT 1 FROM memberships WHERE company_id=$1 AND user_id=$2 AND active=true AND role='admin'",[t.company_id,t.user_id])).rowCount)return 'cancelled';}
  return 'eligible';

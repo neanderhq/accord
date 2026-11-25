@@ -44,3 +44,13 @@ export const bulkSendEntries=pgTable("bulk_send_entries",{
   rowNumber:integer("row_number").notNull(),
   envelopeId:uuid("envelope_id").notNull().unique().references(()=>envelopes.id),
 },t=>[uniqueIndex("bulk_send_row").on(t.batchId,t.rowNumber)]);
+
+export const completionCopies=pgTable("completion_copies",{
+  envelopeId:uuid("envelope_id").primaryKey().references(()=>envelopes.id),
+  email:text().notNull(),
+  generation:integer().notNull().default(0),
+  tokenHash:text("token_hash").unique(),
+  expiresAt:timestamp("expires_at",{withTimezone:true}),
+  revokedAt:timestamp("revoked_at",{withTimezone:true}),
+  createdAt:created(),
+});

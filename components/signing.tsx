@@ -118,7 +118,7 @@ export function Signing({token}:{token:string}) {
  </>}</>}</main></div>;
 }
 export function Completion({token}:{token:string}) {
- const [value,setValue]=useState<{title:string;outputs:OutputView[]}|null>(null),[error,setError]=useState<Error|null>(null);
- useEffect(()=>{api<{title:string;outputs:OutputView[]}>(`/api/complete/${token}`).then(setValue).catch(setError);},[token]);
- return <div className="signing-layout"><SigningHeader/><main className="signing-content max-w-3xl"><p className="eyebrow">COMPLETION RECORD</p><h1>{value?.title??"Completed documents"}</h1><p className="my-4">Read-only access to the flattened PDFs and evidence receipt. Every download is checked against its SHA-256 digest.</p><ErrorNotice error={error}/>{value?<Downloads outputs={value.outputs} url={o=>`/api/complete/${token}?file=${o.id}`}/>:!error&&<p role="status">Checking your download link…</p>}</main></div>;
+ const [value,setValue]=useState<{title:string;outputs:OutputView[];pdfsOnly?:boolean}|null>(null),[error,setError]=useState<Error|null>(null);
+ useEffect(()=>{api<{title:string;outputs:OutputView[];pdfsOnly?:boolean}>(`/api/complete/${token}`).then(setValue).catch(setError);},[token]);
+ return <div className="signing-layout"><SigningHeader/><main className="signing-content max-w-3xl"><p className="eyebrow">COMPLETION RECORD</p><h1>{value?.title??"Completed documents"}</h1><p className="my-4">{value?.pdfsOnly?"Read-only access to the signed PDFs.":"Read-only access to the flattened PDFs and evidence receipt."} Every download is checked against its SHA-256 digest.</p><ErrorNotice error={error}/>{value?<Downloads outputs={value.outputs} url={o=>`/api/complete/${token}?file=${o.id}`}/>:!error&&<p role="status">Checking your download link…</p>}</main></div>;
 }
