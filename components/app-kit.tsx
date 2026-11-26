@@ -2,7 +2,9 @@
 import { useEffect,useState,type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PenLine,LayoutDashboard,Files,Users,ContactRound,Layers,Settings,ChevronDown,ArrowUpRight,ShieldCheck,Database,LogOut,Menu,Search,TriangleAlert } from "lucide-react";
+import { LayoutDashboard,Files,Users,ContactRound,Layers,Settings,ChevronDown,ArrowUpRight,ShieldCheck,Database,LogOut,Menu,Search,TriangleAlert } from "lucide-react";
+import { AccordBrand } from "@/components/accord-brand";
+import { AuthFrame } from "@/components/auth-frame";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert,AlertTitle,AlertDescription } from "@/components/ui/alert";
@@ -27,8 +29,8 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
    return () => desktop.removeEventListener("change", closeOnDesktop);
  }, []);
  const closeMenu = () => setMobile(false);
- if(loading||error?.status===401)return <main className="login-page"><Link href="/" className="brand"><span className="brand-icon"><PenLine size={21}/></span>Accord</Link>{loading?<div className="space-y-3" aria-live="polite"><Skeleton className="h-10 w-72"/><Skeleton className="h-40 w-full"/><p>Loading your workspace…</p></div>:<CardSetup error={error!}/>}</main>;
- const sidebar = (className = "app-sidebar") => <aside className={className}><Link href="/" className="brand" onClick={closeMenu}><span className="brand-icon"><PenLine size={21}/></span><span>Accord</span></Link>
+ if(loading||error?.status===401)return <AuthFrame>{loading?<div className="auth-loading space-y-3" aria-live="polite"><Skeleton className="h-10 w-full"/><Skeleton className="h-40 w-full"/><p>Loading your workspace…</p></div>:<CardSetup error={error!}/>}</AuthFrame>;
+ const sidebar = (className = "app-sidebar") => <aside className={className}><Link href="/" className="brand-link" onClick={closeMenu}><AccordBrand/></Link>
  <div className="workspace-switch"><span className="avatar avatar-company">{(workspace.company.name.trim()[0]??"A").toUpperCase()}</span><div><strong>{workspace.company.name.replace(" (Synthetic)","")}</strong><small>{demo?"Synthetic workspace":workspace.role+" workspace"}</small></div><ChevronDown size={14}/></div>
  <p className="nav-caption">WORKSPACE</p><nav aria-label="Main navigation">{nav.map(n=><Link key={n.href} onClick={closeMenu} href={n.href} className={path===n.href||(n.href==="/envelopes"&&path.startsWith("/envelopes/"))?"active":""}><n.icon size={18}/>{n.label}{n.label==="Envelopes"&&<span className="nav-count">{workspace.envelopes.length}</span>}</Link>)}</nav>
  <div className="sidebar-bottom"><div className="trust-note"><ShieldCheck size={19}/>{workspace.verificationOnly?<><strong>Verification workspace</strong><p>Synthetic documents and identities. Email dispatch is off.</p></>:<><strong>Live workspace</strong><p>Email dispatch is on. Recipients receive secure signing links by email.</p></>}<Link href="/settings" onClick={closeMenu}>View setup status <ArrowUpRight size={13}/></Link></div><Link href="/settings" className="settings-link" onClick={closeMenu}><Settings size={18}/>Settings & integrations</Link><div className="user-block"><span className="avatar">{demo?"SY":"ME"}</span><div><strong>{demo?"Synthetic preview":"Your workspace"}</strong><small>{demo?"Display only":workspace.role}</small></div>{!demo&&<Button variant="ghost" size="icon" aria-label="Sign out" onClick={async()=>{await api("/api/auth/sign-out",{method:"POST",body:"{}"});location.href="/login";}}><LogOut/></Button>}</div></div></aside>;

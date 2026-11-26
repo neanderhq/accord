@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { PenLine, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
+import { AccordBrand } from "./accord-brand";
 import { api, ApiError, Choice, ErrorNotice } from "./app-kit";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -18,7 +19,7 @@ import { parseDrawing } from "@/lib/drawing";
 import type { DocumentView, OutputView } from "@/lib/ui-types";
 type Branding={name:string;color:string;logo:string|null};
 type SigningView={branding:Branding;id:string;title:string;state:string;expiresAt:string;recipient:{id:string;name:string;email:string;consented:boolean};fields:Field[];documents:DocumentView[]};
-function SigningHeader({branding}:{branding?:Branding}){return <header className="signing-header" style={branding?{borderTop:`4px solid ${branding.color ?? "#2563eb"}`}:undefined}><Link href="/" className="brand">{branding?.logo?<img src={branding.logo} alt="" width="32" height="32"/>:<span className="brand-icon"><PenLine size={20}/></span>}<span>{branding?.name??"Accord"}</span></Link><span className="text-sm text-muted-foreground">Review and sign on any device</span></header>;}
+function SigningHeader({branding}:{branding?:Branding}){return <header className="signing-header" style={branding?{borderTop:`4px solid ${branding.color ?? "var(--brand-accent)"}`}:undefined}><Link href="/" className="brand-link">{branding?.logo?<span className="brand"><img src={branding.logo} alt="" width="32" height="32"/><span>{branding.name}</span></span>:<AccordBrand name={branding?.name??"Accord"}/>}</Link><span className="text-sm text-muted-foreground">Review and sign on any device</span></header>;}
 function DrawingPad({fieldId,disabled,value,onChange}:{fieldId:string;disabled:boolean;value:string|undefined;onChange:(value:string)=>void}) {
  const canvasRef=useRef<HTMLCanvasElement|null>(null),drawing=useRef(false),points=useRef<[number,number][][]>([]);
  function render(){const canvas=canvasRef.current;if(!canvas)return;const context=canvas.getContext("2d");if(!context)return;context.clearRect(0,0,canvas.width,canvas.height);context.strokeStyle=getComputedStyle(canvas).color||"#0f172a";context.lineWidth=3;context.lineCap="round";context.lineJoin="round";for(const stroke of points.current){if(stroke.length<2)continue;context.beginPath();stroke.forEach(([x,y],index)=>{const px=x*canvas.width,py=(1-y)*canvas.height;if(index)context.lineTo(px,py);else context.moveTo(px,py);});context.stroke();}}
