@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import postcss from "postcss";
 import { PDFDocument, PDFName, PDFString, degrees, PDFArray, PDFRawStream, decodePDFRawStream } from "pdf-lib";
 import { fieldInput, recipientInput, draftInput, fieldInside, validateValues, valuesInput, type Field } from "../lib/model";
 import { DRAW_PREFIX, parseDrawing } from "../lib/drawing";
@@ -11,6 +15,61 @@ import { AppError } from "../server/errors";
 import { accountMessage, ORIGIN_MESSAGE, recoveryMessage, RequestTimeout, signInMessage, withLoginTimeout } from "../lib/login-feedback";
 import { originTrusted, trustedOrigins } from "../server/origins";
 import { matchesFilters } from "../lib/filters";
+import { AVATAR_PALETTE,avatarColor,avatarInitials } from "../lib/avatar";
+import { InitialsAvatar } from "../components/initials-avatar";
+
+test("avatar initials use first and last graphemes with safe empty-name fallbacks",()=>{
+ const cases=[
+  ["  Sam\tJames\nTaylor  ","ST"],["Northstar Studio","NS"],["Prince","P"],
+  ["e\u0301lodie durand","ÉD"],["李 雷","李雷"],["𠮷田 太郎","𠮷太"],
+  ["👩🏽‍💻 Rivera","👩🏽‍💻R"],["ßmith Johnson","SJ"],
+ ];
+ const segmenter=new Intl.Segmenter("en",{granularity:"grapheme"});
+ for(const [name,expected] of cases){const initials=avatarInitials(name);assert.equal(initials,expected);assert.ok(Array.from(segmenter.segment(initials)).length<=2);}
+ assert.equal(avatarInitials(undefined,"ME"),"ME");
+ assert.equal(avatarInitials(null,"SY"),"SY");
+ assert.equal(avatarInitials("\t\n\u00a0","A"),"A");
+ assert.equal(avatarInitials(""),"?");
+ assert.equal(avatarInitials("","  "),"?");
+ assert.equal(avatarInitials("","👩🏽‍💻XYZ"),"👩🏽‍💻X");
+});
+test("avatar colors prefer stable IDs and normalize name fallbacks deterministically",()=>{
+ const expected=avatarColor("user-17","Sam Taylor");
+ for(let render=0;render<10;render++)assert.deepEqual(avatarColor("user-17","Sam Taylor"),expected);
+ assert.deepEqual(avatarColor(" USER-17 ","Renamed Person"),expected);
+ assert.deepEqual(avatarColor("user-17",undefined,"ME"),expected);
+ assert.deepEqual(avatarColor(undefined," Élodie   Durand "),avatarColor("", "e\u0301lodie\tDURAND"));
+ assert.deepEqual(avatarColor("  ","Sam Taylor"),avatarColor(null,"sam taylor"));
+ assert.deepEqual(avatarColor(null,null,"ME"),avatarColor(undefined,"","me"));
+ assert.ok(AVATAR_PALETTE.includes(avatarColor()));
+ assert.equal(new Set(Array.from({length:128},(_,index)=>avatarColor(`user-${index}`))).size,AVATAR_PALETTE.length);
+});
+test("avatar pastel palettes have darker initials with at least 4.5 to 1 contrast in either theme",()=>{
+ const luminance=(hex:string)=>{
+  const [r,g,b]=hex.slice(1).match(/.{2}/g)!.map(channel=>{const value=parseInt(channel,16)/255;return value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4;});
+  return 0.2126*r+0.7152*g+0.0722*b;
+ };
+ assert.ok(AVATAR_PALETTE.length>=6&&AVATAR_PALETTE.length<=8);
+ for(const {background,foreground} of AVATAR_PALETTE){
+  const light=luminance(background),dark=luminance(foreground);
+  assert.ok(light>dark);
+  assert.ok((light+0.05)/(dark+0.05)>=4.5,`${foreground} on ${background}`);
+ }
+});
+test("avatar component renders decorative identity colors with the circular 36px footprint",()=>{
+ const props={id:"user-17",name:"Sam Taylor"},markup=renderToStaticMarkup(createElement(InitialsAvatar,props));
+ const {background,foreground}=avatarColor(props.id,props.name);
+ assert.equal(renderToStaticMarkup(createElement(InitialsAvatar,props)),markup);
+ assert.match(markup,/class="avatar"/);assert.match(markup,/aria-hidden="true"/);assert.match(markup,/>ST<\/span>$/);
+ assert.ok(markup.includes(`background-color:${background}`));assert.ok(markup.includes(`color:${foreground}`));
+ assert.ok(!markup.includes(props.id));
+ for(const fallback of ["ME","SY"])assert.ok(renderToStaticMarkup(createElement(InitialsAvatar,{id:props.id,fallback})).endsWith(`>${fallback}</span>`));
+ const declarations=new Map<string,string>();
+ postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(".avatar",rule=>{rule.walkDecls(declaration=>{declarations.set(declaration.prop,declaration.value);});});
+ assert.equal(declarations.get("width"),"36px");assert.equal(declarations.get("height"),"36px");
+ assert.equal(declarations.get("border-radius"),"50%");assert.equal(declarations.get("border"),"0");assert.equal(declarations.get("box-shadow"),"none");
+});
+
 test("sign-in distinguishes incorrect credentials from service errors without exposing details",()=>{
  assert.match(signInMessage("INVALID_EMAIL_OR_PASSWORD"),/Email or password is incorrect/);
  assert.match(signInMessage("TOO_MANY_REQUESTS"),/Too many attempts/);
