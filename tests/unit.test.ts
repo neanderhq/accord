@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Children,createElement,isValidElement } from "react";
 import { Collapse } from "../components/ui/collapse";
-import { DialogContent,DialogPortal } from "../components/ui/dialog";
+import { Dialog,DialogContent,DialogPortal } from "../components/ui/dialog";
 import { AlertDialogContent,AlertDialogPortal } from "../components/ui/alert-dialog";
 import { renderToStaticMarkup } from "react-dom/server";
 import postcss from "postcss";
@@ -775,6 +775,22 @@ test("embedded editor retains owner and role gates and provides inline loading w
  assert.match(loading,/role="status">Loading envelope/);assert.doesNotMatch(loading,/workspace-loading|app-layout|app-sidebar/);
  const frozen=renderToStaticMarkup(createElement(EnvelopeEditor,{id:drawerEnvelope.id,workspace:drawerWorkspace,initialEnvelope:{...drawerEnvelope,state:"sent"},embedded:true}));
  assert.doesNotMatch(frozen,/Save draft|Review &amp; freeze for signing/);assert.match(frozen,/Reminders &amp; links|Signing &amp; evidence/);
+});
+
+test("drawer uses one real dialog title with status, default Details and retained inactive Activity; wizard has no activity controls",()=>{
+ const render=(creation=false)=>renderToStaticMarkup(createElement(Dialog,{open:true},createElement(EnvelopeEditor,{id:drawerEnvelope.id,workspace:drawerWorkspace,initialEnvelope:drawerEnvelope,embedded:true,creation,onDismiss:()=>{}})));
+ const markup=render();
+ assert.equal((markup.match(/data-slot="dialog-title"/g)??[]).length,1);
+ assert.match(markup,/<h2[^>]*data-slot="dialog-title"[^>]*>Fixture agreement<\/h2>/);
+ assert.match(markup,/class="envelope-title-row">.*?Fixture agreement.*?status-draft/);
+ assert.doesNotMatch(markup,/Envelope details|Review documents, recipients and signing activity\./);
+ assert.match(markup,/aria-selected="true"[^>]*[^<]*id="[^"]*trigger-details"/);
+ assert.match(markup,/data-state="inactive"[^>]*[^<]*id="[^"]*content-activity"/);
+ assert.match(markup,/Activity · UTC/);
+ const wizard=render(true);
+ assert.equal((wizard.match(/data-slot="dialog-title"/g)??[]).length,1);
+ assert.doesNotMatch(wizard,/role="tablist"|Activity · UTC/);
+ assert.match(wizard,/Envelope creation steps/);
 });
 
 test("drawer links keep modified clicks and new-tab behavior while ordinary clicks embed the editor",()=>{

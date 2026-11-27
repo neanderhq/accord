@@ -329,11 +329,50 @@
 .mobile-workspace-menu .app-sidebar{display:flex;position:static;z-index:auto;width:100%;min-height:100%;border:0}
 
 /* Envelope drawers share the existing editor without mounting a second workspace. */
-[data-slot=dialog-content].envelope-drawer{inset:0 0 0 auto;display:flex;flex-direction:column;width:80vw;max-width:none;height:100dvh;max-height:100dvh;min-width:0;gap:0;padding:0;border-radius:0;transform:none;translate:none;overflow:hidden;--shell-border:color-mix(in srgb,var(--border) 55%,var(--card))}
-.envelope-drawer-header{flex-shrink:0;padding:24px 64px 20px 28px;border-bottom:1px solid var(--shell-border);text-align:left}
-.envelope-drawer-header [data-slot=dialog-title]{line-height:1.4}
-.envelope-drawer-body.content-area{flex:1;min-height:0;max-width:none;padding:24px 28px 32px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
-.envelope-drawer>[data-slot=dialog-close]{display:grid;place-items:center;min-width:44px;min-height:44px;top:14px;right:12px}
+[data-slot=dialog-content].envelope-drawer{inset:0 0 0 auto;display:flex;flex-direction:column;width:90vw;max-width:none;height:100dvh;max-height:100dvh;min-width:0;gap:0;padding:0;border-radius:0;transform:none;translate:none;overflow:hidden;--shell-border:color-mix(in srgb,var(--border) 55%,var(--card))}
+.envelope-drawer-body.content-area{display:flex;flex-direction:column;flex:1;min-height:0;max-width:none;padding:0;overflow:hidden}
+.envelope-drawer :is(.envelope-editor,.envelope-creation){flex:1;min-height:0}
+.envelope-drawer .envelope-creation{display:flex;flex-direction:column}
+.envelope-editor{gap:0}
+.envelope-heading{min-width:0;background:var(--card);padding-bottom:20px;margin-bottom:24px;border-bottom:1px solid var(--shell-border,var(--border))}
+.envelope-heading-row{display:flex;align-items:center;justify-content:space-between;gap:24px;min-width:0}
+.envelope-heading-copy{min-width:0;display:grid;gap:8px}
+.envelope-title-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;min-width:0}
+.envelope-title-row :is(h1,[data-slot=dialog-title]){min-width:0;overflow-wrap:anywhere;font-size:24px;line-height:1.3;font-weight:600;letter-spacing:-.6px}
+.envelope-heading-copy>p{font-size:13px;line-height:1.6;color:var(--muted-foreground)}
+.envelope-heading .composer-actions{flex-shrink:0;flex-wrap:nowrap}
+.envelope-heading .sender-preview{color:var(--muted-foreground)}
+.envelope-heading .envelope-close{flex:0 0 44px;min-width:44px;min-height:44px;color:var(--muted-foreground)}
+.envelope-tabs[data-slot=tabs-list]{height:44px;padding:0;margin-top:16px;gap:20px;justify-content:start}
+.envelope-tabs [data-slot=tabs-trigger]{height:44px;flex:none;padding:10px 2px;border-radius:0}
+.envelope-tabs [data-slot=tabs-trigger]::after{bottom:-1px}
+.envelope-drawer .envelope-heading{flex-shrink:0;margin:0;padding:24px 28px 20px}
+.envelope-drawer .envelope-heading:has(.envelope-tabs){padding-bottom:0}
+.envelope-drawer :is(.envelope-panel,.envelope-create-body,.envelope-loading){flex:1;min-height:0;padding:24px 28px 32px;overflow-y:auto;overscroll-behavior:contain}
+.envelope-feedback:has(.notice,.envelope-error:not(:empty)){margin-bottom:20px}
+.envelope-drawer .envelope-feedback:has(.notice,.envelope-error:not(:empty)){margin:20px 28px 0}
+.envelope-feedback .notice{margin-bottom:0}
+.envelope-editor .composer-grid{grid-template-columns:minmax(340px,.9fr) minmax(0,1.4fr);gap:24px}
+.composer-form{container-type:inline-size;gap:24px;padding:24px;border:0;border-radius:12px;background:color-mix(in srgb,var(--muted) 65%,var(--card))}
+.composer-extras.form-stack{gap:24px}
+.content-area .composer-form [data-slot=card]{gap:18px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.content-area .composer-form :is([data-slot=card-header],[data-slot=card-content]){padding-inline:0}
+.composer-form label{white-space:nowrap}
+.composer-form .two-columns>div{min-width:0}
+.composer-form .document-list button{max-width:100%;overflow-wrap:anywhere}
+.composer-form .field-help{font-size:12px;color:var(--muted-foreground);margin-top:6px}
+.composer-form .upload-box{position:relative;background:var(--card);border:0;padding:20px}
+.upload-box .choose-files{justify-self:start;min-height:40px}
+.upload-box .choose-files svg{color:inherit}
+.content-area .upload-input[type=file]{position:absolute;width:1px;height:1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.upload-feedback{overflow-wrap:anywhere}
+.envelope-editor .preview-toolbar{padding:0;border:0;background:var(--card)}
+.content-area .envelope-editor .preview-toolbar [data-slot=select-trigger]{border-color:transparent;background:var(--muted);color:var(--muted-foreground);box-shadow:none}
+.content-area .envelope-editor .preview-toolbar [data-slot=select-trigger]:hover{background:var(--secondary)}
+.envelope-activity{min-width:0}
+.envelope-activity .audit-list{font-size:13px;gap:16px}
+.envelope-activity .audit-list li{gap:8px 24px;padding-bottom:16px}
+@container(max-width:420px){.composer-form .two-columns{grid-template-columns:minmax(0,1fr)}}
 .envelope-confirmation{max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain}
 .envelope-editor,.composer-controls{min-width:0}
 .app-layout :is(.preview-empty,.pdf-frame),.envelope-drawer :is(.preview-empty,.pdf-frame){background:var(--card)}
@@ -352,9 +391,17 @@
 .envelope-drawer .document-list button:focus-visible{outline:2px solid var(--ring);outline-offset:4px}
 @media(max-width:900px){
  [data-slot=dialog-content].envelope-drawer{width:100vw}
- .envelope-drawer-header{padding:20px 64px 16px 20px}
- .envelope-drawer-body.content-area{padding:20px 16px 24px}
+ .envelope-heading-row{align-items:start;flex-direction:column;gap:16px}
+ .envelope-heading .composer-actions{width:100%;justify-content:end}
+ .envelope-heading .composer-actions>[data-slot=button]{flex:none;white-space:nowrap}
+ .envelope-heading .sender-preview{margin-right:auto}
+ .envelope-drawer .envelope-heading{padding:20px 16px 16px}
+ .envelope-drawer :is(.envelope-panel,.envelope-create-body,.envelope-loading){padding:20px 16px 24px}
+ .envelope-drawer .envelope-feedback:has(.notice,.envelope-error:not(:empty)){margin:16px 16px 0}
+ .envelope-editor .composer-grid{grid-template-columns:minmax(0,1fr)}
+ .composer-form{padding:20px}
  .envelope-drawer [data-slot=button]{min-height:44px;height:auto;white-space:normal}
+ .envelope-heading .composer-actions>[data-slot=button]:not(.envelope-close){font-size:13px;padding-inline:10px}
  .envelope-drawer [data-slot=input],.envelope-drawer [data-slot=select-trigger]{min-height:44px;font-size:16px}
  .envelope-wizard-footer{bottom:-24px}
  .envelope-steps{gap:10px 14px}

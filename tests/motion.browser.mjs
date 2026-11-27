@@ -79,7 +79,8 @@ async function filters(page,reduced){
  if(!reduced)await sample(region,{duration:300,height:true});
  await page.getByLabel("Recipient",{exact:true}).fill("Avery");
  await page.getByLabel("Created from",{exact:true}).fill("2026-01-01");
- await click(toggle);
+ // Capture the exit before browser round trips can consume its short duration.
+ await toggle.evaluate(async el=>{el.click();await new Promise(requestAnimationFrame);document.getElementById("envelope-advanced-filters").getAnimations().forEach(animation=>animation.pause());});
  assert.equal(await region.getAttribute("inert"),"");
  assert.equal(await page.locator("#envelopes-recipient").evaluate(el=>{el.focus();return document.activeElement===el;}),false);
  assert.doesNotMatch(await page.locator("main").ariaSnapshot(),/textbox "Recipient"/);
@@ -102,7 +103,7 @@ async function drawers(page,state,width,reduced){
   await click(trigger);const drawer=page.locator(selector);await drawer.waitFor();
   if(!reduced)await sample(drawer,{duration:300,panel:true});
   else assert.equal(await drawer.evaluate(el=>el.getAnimations().length),0);
-  await settle(drawer);const box=await drawer.boundingBox();assert.equal(Math.round(box.width),width>900?width*.8:width);assert.equal(Math.round(box.x),width>900?width*.2:0);
+  await settle(drawer);const box=await drawer.boundingBox();assert.equal(Math.round(box.width),width>900?width*.9:width);assert.equal(Math.round(box.x),width>900?Math.round(width*.1):0);
   await drawer.getByRole("button",{name:"Close",exact:true}).focus();await page.keyboard.press("Tab");
   assert.equal(await drawer.evaluate(el=>el.contains(document.activeElement)),true);
   assert.equal(await page.evaluate(()=>document.body.hasAttribute("data-scroll-locked")),true);
