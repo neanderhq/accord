@@ -6,7 +6,8 @@ import { Children,createElement,isValidElement } from "react";
 import { Collapse } from "../components/ui/collapse";
 import { Dialog,DialogContent,DialogPortal } from "../components/ui/dialog";
 import { AlertDialogContent,AlertDialogPortal } from "../components/ui/alert-dialog";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import postcss from "postcss";
 import { PDFDocument, PDFName, PDFString, degrees, PDFArray, PDFRawStream, decodePDFRawStream } from "pdf-lib";
 import { fieldInput, recipientInput, draftInput, fieldInside, validateValues, valuesInput, type Field } from "../lib/model";
@@ -25,21 +26,26 @@ import { RecipientPill,RecipientOverflowList } from "../components/envelope-reci
 import { recipientDisplay,packRecipientRows } from "../lib/recipient-layout";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { Shell,ApiError } from "../components/app-kit";
-import { WorkspaceLoader } from "../components/accord-brand";
+import { AccordBrand,WorkspaceLoader } from "../components/accord-brand";
+import { ContentLoader } from "../components/content-loader";
+import { WorkspaceFrame } from "../components/workspace-frame";
 import RouteLoading from "../app/loading";
 import { Composer,EnvelopeEditor,EnvelopeNotice } from "../components/composer";
 import { SettingsWorkspace,SettingsPage,SettingsNavigation,SettingsDeliveryLog,loadSettingsSection } from "../components/settings";
 import { settingsSections,settingsHref,canAccessSettingsSection,brandingSettingsPayload,webhookSettingsPayload,type SettingsSectionId } from "../app/settings/sections";
-import SettingsIndex from "../app/settings/page";
-import ContactsSettingsPage from "../app/settings/contacts/page";
-import BrandingSettingsPage from "../app/settings/branding/page";
-import EmailJobsSettingsPage from "../app/settings/email-jobs/page";
-import DeliveryLogSettingsPage from "../app/settings/delivery-log/page";
-import WebhookSettingsPage from "../app/settings/webhook/page";
-import TemplatesSettingsPage from "../app/settings/templates/page";
+import SettingsIndex from "../app/(workspace)/settings/page";
+import ContactsSettingsPage from "../app/(workspace)/settings/contacts/page";
+import BrandingSettingsPage from "../app/(workspace)/settings/branding/page";
+import EmailJobsSettingsPage from "../app/(workspace)/settings/email-jobs/page";
+import DeliveryLogSettingsPage from "../app/(workspace)/settings/delivery-log/page";
+import WebhookSettingsPage from "../app/(workspace)/settings/webhook/page";
+import TemplatesSettingsPage from "../app/(workspace)/settings/templates/page";
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { envelopePermissions,envelopeStepError,opensEnvelopeDrawer,envelopeForStep,mergeSavedEnvelopeStep,envelopeDraftPayload } from "../lib/envelope-wizard";
 import type { EnvelopeView,RecipientView,WorkspaceView } from "../lib/ui-types";
+
+const router={bfcacheId:"fixture",back(){},forward(){},refresh(){},hmrRefresh(){},push(){},replace(){},prefetch(){}};
+const renderToStaticMarkup=(node:Parameters<typeof renderMarkup>[0])=>renderMarkup(createElement(AppRouterContext.Provider,{value:router},node));
 
 test("branded loading shows only the existing star and a screen-reader status",()=>{
  const markup=renderToStaticMarkup(createElement(WorkspaceLoader));
@@ -52,16 +58,30 @@ test("branded loading shows only the existing star and a screen-reader status",(
  assert.doesNotMatch(markup,/<a\b|<aside\b|<footer\b|<nav\b|data-slot="card|skeleton|accord-brand/);
 });
 
-test("branded loading is shared by route, workspace, Settings and editor waits",()=>{
- const loader=renderToStaticMarkup(createElement(WorkspaceLoader));
+test("only initial workspace bootstrap uses the logo; route and resource waits use content skeletons",()=>{
  const render=(children:ReturnType<typeof createElement>)=>renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/settings/contacts"},children));
- assert.equal(renderToStaticMarkup(createElement(RouteLoading)),loader);
- assert.equal(render(createElement(Shell,{loading:true,children:"Private content"})),loader);
- assert.equal(render(createElement(SettingsWorkspace,{section:"contacts"})),loader);
- assert.equal(render(createElement(Composer,{id:"fictional-envelope"})),loader);
+ const content=renderToStaticMarkup(createElement(ContentLoader));
+ assert.equal(renderToStaticMarkup(createElement(RouteLoading)),content);
+ const initial=render(createElement(WorkspaceFrame,{children:"Private content"}));assert.match(initial,/workspace-loading/);assert.doesNotMatch(initial,/Private content|app-sidebar|topbar/);
+ const shell=render(createElement(Shell,{loading:true,children:"Private content"}));
+ assert.match(shell,/<aside/);assert.match(shell,/class="topbar"/);assert.match(shell,/data-slot="skeleton"/);assert.doesNotMatch(shell,/workspace-loading|Private content/);
+ for(const markup of [render(createElement(SettingsWorkspace,{section:"contacts"})),render(createElement(Composer,{id:"fictional-envelope"}))]){
+  assert.match(markup,/data-slot="skeleton"/);assert.match(markup,/role="status" aria-busy="true"/);assert.doesNotMatch(markup,/workspace-loading/);
+ }
  const section=renderToStaticMarkup(createElement(SettingsPage,{section:"contacts",workspace:{company:{id:"northstar",name:"Northstar Studio"},role:"admin",userId:"fixture-user",envelopes:[],verificationOnly:true,developmentLinks:false}}));
- // React hoists the image preload hint ahead of the surrounding Settings layout.
- assert.ok(section.includes(loader.slice(loader.indexOf('<div class="workspace-loading"'))));assert.doesNotMatch(section,/Loading contacts/);
+ assert.match(section,/aria-label="Settings navigation"/);assert.match(section,/<h1>Contacts/);assert.match(section,/Loading Contacts/);assert.match(section,/data-slot="skeleton"/);assert.doesNotMatch(section,/workspace-loading/);
+});
+
+test("content placeholders shimmer subtly and stop moving for reduced motion",()=>{
+ const markup=renderToStaticMarkup(createElement(ContentLoader,{label:"Loading contacts"}));
+ assert.match(markup,/role="status" aria-busy="true"/);assert.match(markup,/sr-only">Loading contacts/);assert.match(markup,/aria-hidden="true"/);assert.doesNotMatch(markup,/animate-pulse|<img/);
+ const css=postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8"));
+ let shimmer=false,reduced=false;
+ css.walkRules(".skeleton-shimmer::after",rule=>rule.walkDecls("animation",decl=>{
+  if(rule.parent?.type==="root"&&decl.value.includes("content-shimmer"))shimmer=true;
+  if(rule.parent?.type==="atrule"&&rule.parent.params.replaceAll(/\s/g,"")==="(prefers-reduced-motion:reduce)"&&decl.value==="none")reduced=true;
+ }));
+ assert.ok(shimmer);assert.ok(reduced);
 });
 
 test("branded loading yields immediately to content and usable workspace errors",()=>{
@@ -305,7 +325,7 @@ test("workspace identity is a static muted card with only its name and a rounded
  for(const role of ["admin","sender","read-only",""])for(const demo of [false,true]){
   const workspace:WorkspaceView={company:{id:"northstar",name:"Northstar Studio"},role,userId:"fixture-user",envelopes:[],verificationOnly:false,developmentLinks:false};
   const markup=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/"},createElement(Shell,{workspace,demo,children:"Workspace content"})));
-  const card=markup.match(/<div class="workspace-card">.*?<\/div>/)?.[0];
+  const card=markup.match(/<div class="workspace-card"[^>]*>.*?<\/div>/)?.[0];
   assert.ok(card);assert.equal(card.replace(/<[^>]*>/g,""),"Northstar Studio");
   assert.match(card,/<span class="workspace-icon" aria-hidden="true"><svg[^>]*class="[^"]*lucide-building-2[^"]*"/);
   assert.doesNotMatch(card,/<a\b|<button\b|<small\b|\b(?:role|tabindex|href|aria-haspopup|aria-expanded|disabled)=|avatar|chevron/);
@@ -333,6 +353,24 @@ test("signed-in shell keeps readable footer roles, navigation and one conditiona
  const enabled=render({...workspace,verificationOnly:false});
  assert.doesNotMatch(enabled,/email-setup-note|Email delivery is off|Email live|delivered by email/);
  for(const [role,label] of [["sender","Sender"],["read-only","Viewer"]])assert.ok(render({...workspace,role}).includes(`<small>${label}</small>`));
+});
+
+test("sidebar server render starts expanded with a named native toggle and labeled navigation",()=>{
+ const workspace:WorkspaceView={company:{id:"fixture-company",name:"Northstar Studio"},role:"admin",userId:"fixture-user",envelopes:[],verificationOnly:true,developmentLinks:false};
+ const markup=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/envelopes"},createElement(Shell,{workspace,children:"Workspace content"})));
+ assert.match(markup,/data-sidebar-collapsed="false" data-sidebar-ready="false"/);
+ assert.match(markup,/<button[^>]*aria-label="Collapse sidebar"[^>]*aria-expanded="true"[^>]*aria-controls="desktop-workspace-navigation"/);
+ assert.equal((markup.match(/aria-label="Collapse sidebar"/g)??[]).length,1);
+ for(const name of ["Overview","Envelopes","Team","Settings &amp; integrations","Sign out"])assert.ok(markup.includes(`aria-label="${name}"`));
+ assert.match(markup,/aria-label="Envelopes" aria-current="page"[^>]*href="\/envelopes"/);
+ assert.match(markup,/href="\/settings\/email-jobs"/);assert.match(markup,/>Workspace content</);
+});
+
+test("logo mark can decorate the expansion control without repeating a brand name",()=>{
+ const mark=renderToStaticMarkup(createElement(AccordBrand,{markOnly:true}));
+ assert.match(mark,/<span aria-hidden="true"/);assert.match(mark,/class="accord-brand-mark"/);assert.match(mark,/alt=""/);
+ assert.doesNotMatch(mark,/accord-brand-name|>Accord<|tabindex|<button|<a\b/);
+ assert.match(renderToStaticMarkup(createElement(AccordBrand)),/class="accord-brand-name">Accord<\/span>/);
 });
 
 test("all six Settings routes select their own page and the index redirects to Contacts",()=>{
@@ -772,7 +810,7 @@ test("embedded editor retains owner and role gates and provides inline loading w
   assert.doesNotMatch(markup,/app-sidebar|workspace-loading|All envelopes|app-layout/);
  }
  const loading=renderToStaticMarkup(createElement(EnvelopeEditor,{id:"fixture-envelope",workspace:drawerWorkspace,embedded:true}));
- assert.match(loading,/role="status">Loading envelope/);assert.doesNotMatch(loading,/workspace-loading|app-layout|app-sidebar/);
+ assert.match(loading,/role="status" aria-busy="true"/);assert.match(loading,/sr-only">Loading envelope/);assert.doesNotMatch(loading,/workspace-loading|app-layout|app-sidebar/);
  const frozen=renderToStaticMarkup(createElement(EnvelopeEditor,{id:drawerEnvelope.id,workspace:drawerWorkspace,initialEnvelope:{...drawerEnvelope,state:"sent"},embedded:true}));
  assert.doesNotMatch(frozen,/Save draft|Review &amp; freeze for signing/);assert.match(frozen,/Reminders &amp; links|Signing &amp; evidence/);
 });

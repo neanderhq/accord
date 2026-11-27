@@ -1,9 +1,9 @@
 "use client";
 import { useMemo,useRef,useState,type MouseEvent } from "react";
-import Link from "next/link";
+import Link from "./workspace-link";
 import { usePathname } from "next/navigation";
 import { Plus,Search,Download,Clock3,FileCheck2,FilePenLine,Send,ChevronRight,SlidersHorizontal,Users } from "lucide-react";
-import { Shell,useWorkspace,PageHeading,Status,Choice,Empty,ErrorNotice } from "./app-kit";
+import { useWorkspace,PageHeading,Status,Choice,Empty } from "./app-kit";
 import { InitialsAvatar } from "./initials-avatar";
 import { avatarColor,identityHash } from "@/lib/avatar";
 import { EnvelopeRecipients } from "./envelope-recipients";
@@ -37,7 +37,7 @@ export function DocumentCover({id}:{id:string}) {
 
 type DrawerTarget={kind:"create"}|{kind:"detail";id:string};
 
-export function Dashboard(){const overview=usePathname()==="/";const {workspace,loading,error,demo,refresh,refreshError}=useWorkspace();const [search,setSearch]=useState(""),[status,setStatus]=useState("all"),[folder,setFolder]=useState("all"),[tag,setTag]=useState("all"),[from,setFrom]=useState(""),[to,setTo]=useState(""),[recipient,setRecipient]=useState("all"),[visibility,setVisibility]=useState("active");const [advanced,setAdvanced]=useState(false);
+export function Dashboard(){const overview=usePathname()==="/";const {workspace,loading,demo,refresh}=useWorkspace();const [search,setSearch]=useState(""),[status,setStatus]=useState("all"),[folder,setFolder]=useState("all"),[tag,setTag]=useState("all"),[from,setFrom]=useState(""),[to,setTo]=useState(""),[recipient,setRecipient]=useState("all"),[visibility,setVisibility]=useState("active");const [advanced,setAdvanced]=useState(false);
 const [drawer,setDrawer]=useState<(DrawerTarget&{session:number})|null>(null),drawerTrigger=useRef<HTMLAnchorElement|null>(null),drawerSession=useRef(0);
 function openDrawer(event:MouseEvent<HTMLAnchorElement>,target:DrawerTarget){if(!opensEnvelopeDrawer(event))return;event.preventDefault();drawerTrigger.current=event.currentTarget;setDrawer({...target,session:++drawerSession.current});}
 function closeDrawer(session:number){if(session!==drawerSession.current)return;setDrawer(null);void refresh();}
@@ -45,9 +45,8 @@ const rows=useMemo(()=>workspace.envelopes.filter(e=>(status==="all"||e.state===
 const senders=new Map<string,string>();for(const e of workspace.envelopes)senders.set(e.owner_id??e.owner_name??"",e.owner_name??"Sender");
 const usage=Array.from(senders,([id,name])=>{const own=workspace.envelopes.filter(e=>(e.owner_id??e.owner_name??"")===id);return {id,name,total:own.length,sent:own.filter(e=>e.state!=="draft").length,completed:own.filter(e=>e.state==="completed").length};}).sort((a,b)=>b.total-a.total);
 const counters=[{label:"All envelopes",value:workspace.envelopes.length,icon:FilePenLine,help:"Including archived and deleted"},{label:"Awaiting signature",value:workspace.envelopes.filter(e=>["sent","viewed","part-signed"].includes(e.state)).length,icon:Clock3,help:"Sent and in progress"},{label:"Completed",value:workspace.envelopes.filter(e=>e.state==="completed").length,icon:FileCheck2,help:"Ready for your records"},{label:"Drafts",value:workspace.envelopes.filter(e=>e.state==="draft").length,icon:Send,help:"Not sent for signing"},{label:"Senders",value:senders.size,icon:Users,help:"People with envelopes"}];
-return <Shell {...{workspace,loading,error,demo}}>
+return <>
 <PageHeading title={overview?"Overview":"Envelopes"} description={overview?"Track signing activity across your workspace.":"Manage your documents from draft to completed."} action={workspace.role!=="read-only"&&<Button asChild><Link href="/envelopes/new" onClick={event=>openDrawer(event,{kind:"create"})}><Plus/>Create envelope</Link></Button>}/>
-<ErrorNotice error={refreshError}/>
 {overview&&<div className="stats-grid">{counters.map(c=><Card key={c.label} className="stat-card"><CardContent><div className="stat-label">{c.label}<c.icon size={17}/></div><div className="stat-value">{c.value}</div><p>{demo?"Synthetic display · ":""}{c.help}</p></CardContent></Card>)}</div>}
 <Card className="envelopes-card">
  <CardHeader className="section-header"><div><CardTitle>{overview?"Envelopes":"All envelopes"}</CardTitle><p>Search and filter your workspace documents.</p></div><div className="section-actions">{overview&&<Button variant="ghost" asChild><Link href="/envelopes">View all<ChevronRight/></Link></Button>}<Button variant="outline" disabled={demo||loading} asChild={!demo&&!loading}>{demo||loading?<span><Download/>Export CSV</span>:<a href={`/api/envelopes?${new URLSearchParams({search,status,folder,tag,from,to,recipient,visibility})}`}><Download/>Export CSV</a>}</Button></div></CardHeader>
@@ -62,4 +61,4 @@ return <Shell {...{workspace,loading,error,demo}}>
 </Card>
 {overview&&<Card className="sender-summary"><CardHeader><CardTitle>Sender usage</CardTitle><p className="text-sm text-muted-foreground">Envelope totals by owner, including archived and deleted records.</p></CardHeader><CardContent>{usage.length?<ul className="sender-usage">{usage.map(u=><li key={u.id}><InitialsAvatar id={u.id} name={u.name}/><div><strong>{u.name}</strong><p>{u.total} total · {u.sent} non-draft · {u.completed} completed</p></div></li>)}</ul>:<p className="text-sm text-muted-foreground">No envelopes yet.</p>}</CardContent></Card>}
 {drawer&&<EnvelopeDrawer key={drawer.session} target={drawer} workspace={workspace} onClose={()=>closeDrawer(drawer.session)} onSaved={refresh} returnFocus={()=>{if(drawer.session!==drawerSession.current)return;const trigger=drawerTrigger.current;const target=trigger?.isConnected?trigger:document.querySelector<HTMLInputElement>('[aria-label="Search envelopes"]');target?.focus({preventScroll:true});}}/>}
-</Shell>;}
+</>;}

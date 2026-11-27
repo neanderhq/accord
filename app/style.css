@@ -1,8 +1,24 @@
 :root{--motion-popup:200ms;--motion-panel:300ms;--motion-ease:cubic-bezier(.22,.61,.36,1)}
 .app-layout,.mobile-workspace-menu{--background:var(--card);--shell-border:color-mix(in srgb,var(--border) 55%,var(--card))}
-.app-layout{display:flex;min-height:100vh;background:var(--background)}
-.app-sidebar{width:240px;flex-shrink:0;background:var(--background);border-right:1px solid var(--shell-border);padding:24px 16px 16px;display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;z-index:30;overflow-y:auto}
-.app-sidebar>.brand-link{margin-inline:12px}
+.app-layout{--sidebar-width:240px;--sidebar-duration:420ms;--sidebar-ease:cubic-bezier(.22,.61,.36,1);display:flex;min-height:100vh;background:var(--background)}
+.app-layout[data-sidebar-collapsed=true]{--sidebar-width:76px}
+.app-sidebar{width:var(--sidebar-width,240px);flex-shrink:0;background:var(--background);border-right:1px solid var(--shell-border);padding:24px 16px 16px;display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;z-index:30;overflow-y:auto;overflow-x:hidden;transition:width var(--sidebar-duration) var(--sidebar-ease)}
+.sidebar-header{position:relative;display:flex;align-items:center;min-height:36px;flex-shrink:0}
+.sidebar-header>.brand-link{margin-left:12px;max-width:max(0px,calc(100% - 44px));overflow:hidden;transition:opacity var(--sidebar-duration) var(--sidebar-ease)}
+.sidebar-header .accord-brand-name{white-space:nowrap}
+.sidebar-toggle{position:absolute;right:0;width:32px;height:36px;color:var(--muted-foreground);flex-shrink:0}
+.sidebar-toggle>svg,.sidebar-toggle-mark{position:absolute;inset:0;margin:auto;transition:opacity 220ms var(--sidebar-ease),transform 300ms var(--sidebar-ease)}
+.sidebar-toggle>svg{width:18px;height:18px}
+.sidebar-toggle-mark{width:32px}
+.sidebar-toggle-mark,.sidebar-expand-icon{opacity:0;transform:scale(.85)}
+.app-sidebar[data-collapsed=true] .sidebar-header>.brand-link{opacity:0;pointer-events:none}
+.app-sidebar[data-collapsed=true] .sidebar-toggle{width:42px}
+.app-sidebar[data-collapsed=true] .sidebar-collapse-icon{opacity:0;transform:scale(.85)}
+.app-sidebar[data-collapsed=true] .sidebar-toggle-mark{opacity:1;transform:scale(1)}
+.app-sidebar[data-collapsed=true] .sidebar-toggle:is(:hover,:focus) .sidebar-toggle-mark{opacity:0;transform:scale(.85)}
+.app-sidebar[data-collapsed=true] .sidebar-toggle:is(:hover,:focus) .sidebar-expand-icon{opacity:1;transform:scale(1)}
+.app-sidebar :is(a,button,[tabindex="0"]):focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.app-sidebar :is(a,button,[tabindex="0"]){scroll-margin-block:8px}
 .brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:600;letter-spacing:-.7px;line-height:1.2;text-decoration:none;min-width:0}
 .brand-link{display:inline-flex;align-items:center;min-width:0;width:fit-content;max-width:100%;color:var(--foreground);text-decoration:none;border-radius:6px}
 .brand>span{overflow-wrap:anywhere}
@@ -13,6 +29,20 @@
 .workspace-loading-mark{display:block;width:48px;height:auto;object-fit:contain;animation:workspace-loading-spin 3s linear infinite}
 @keyframes workspace-loading-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.workspace-loading-mark{animation:none}}
+.workspace-scope{display:contents}
+.app-main{position:relative}
+.workspace-updating{position:absolute;top:0;left:0;right:0;pointer-events:none}
+.workspace-updating .content-loading{padding:0}
+.workspace-updating .content-loading-shapes>[data-slot="skeleton"]{height:3px;width:100%;border-radius:0}
+.workspace-updating .content-loading-shapes>[data-slot="skeleton"]:not(:first-child){display:none}
+.content-loading{width:100%;padding:24px 0}
+.content-loading-shapes{display:flex;flex-direction:column;gap:20px}
+.content-loading-compact{padding:0 0 16px}
+.content-loading-compact .content-loading-shapes{gap:8px}
+.skeleton-shimmer{position:relative;overflow:hidden}
+.skeleton-shimmer::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);animation:content-shimmer 1.8s ease-in-out infinite}
+@keyframes content-shimmer{to{transform:translateX(100%)}}
+@media(prefers-reduced-motion:reduce){.skeleton-shimmer::after{animation:none;transform:none;background:none}}
 .workspace-card{display:flex;align-items:center;justify-content:start;gap:10px;width:100%;height:auto;min-height:64px;margin:24px 0;padding:12px 10px;border:0;border-radius:10px;background:color-mix(in srgb,var(--secondary) 75%,var(--card));box-shadow:none;white-space:normal;text-align:left;color:var(--foreground)}
 .workspace-icon{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border-radius:8px;background:var(--muted);color:var(--muted-foreground)}
 .workspace-identity{min-width:0;flex:1}
@@ -39,7 +69,29 @@
 .user-block strong,.user-block small{display:block;font-size:12px;overflow-wrap:anywhere}
 .user-block strong{font-weight:500}
 .user-block small{color:var(--muted-foreground);margin-top:2px}
-.app-main{margin-left:240px;min-width:0;width:calc(100% - 240px);display:flex;flex-direction:column}
+.app-main{margin-left:var(--sidebar-width);min-width:0;width:calc(100% - var(--sidebar-width));display:flex;flex-direction:column;transition:margin-left var(--sidebar-duration) var(--sidebar-ease),width var(--sidebar-duration) var(--sidebar-ease)}
+/* Keep one set of controls mounted. Native transitions can reverse mid-flight. */
+.app-sidebar :is(.workspace-card,.workspace-identity,.sidebar-label,.nav-count,.nav-caption,.email-setup-note,.sidebar-note-copy,.user-block,.user-block>.avatar,.sidebar-user-copy){transition-property:opacity,transform,max-width,max-height,padding,margin,gap,grid-template-columns,width;transition-duration:var(--sidebar-duration);transition-timing-function:var(--sidebar-ease)}
+.app-sidebar :is(nav a,.settings-link){overflow:hidden;transition:background var(--motion-popup) var(--motion-ease),color var(--motion-popup) var(--motion-ease),gap var(--sidebar-duration) var(--sidebar-ease)}
+.app-sidebar :is(nav a,.settings-link)>svg{flex-shrink:0}
+.sidebar-label{max-width:180px;white-space:nowrap;overflow:hidden}
+.nav-count{max-width:32px;overflow:hidden}
+.nav-caption{max-height:24px;overflow:hidden;white-space:nowrap}
+.workspace-identity{max-width:150px;overflow:hidden}
+.workspace-identity strong{width:137px}
+.email-setup-note{max-height:220px;overflow:hidden}
+.sidebar-note-copy{width:157px;min-width:157px}
+.user-block{display:grid;grid-template-columns:36px minmax(0,1fr) 32px}
+.sidebar-user-copy{max-height:40px;overflow:hidden;white-space:nowrap}
+.app-sidebar[data-collapsed=true] :is(.sidebar-label,.nav-count,.workspace-identity){max-width:0;opacity:0;transform:translateX(-6px)}
+.app-sidebar[data-collapsed=true] :is(nav a,.settings-link){gap:0}
+.app-sidebar[data-collapsed=true] .workspace-card{padding-inline:3px;gap:0}
+.app-sidebar[data-collapsed=true] .nav-caption{max-height:0;margin-bottom:0;opacity:0}
+.app-sidebar[data-collapsed=true] .email-setup-note{max-height:42px;padding:12px 13px;gap:0}
+.app-sidebar[data-collapsed=true] :is(.sidebar-note-copy,.sidebar-user-copy){opacity:0;transform:translateX(-6px)}
+.app-sidebar[data-collapsed=true] .user-block:not(.user-block-demo){grid-template-columns:0px minmax(0,1fr) 32px;gap:0}
+.app-sidebar[data-collapsed=true] .user-block:not(.user-block-demo)>.avatar{width:0;opacity:0}
+.app-layout[data-sidebar-ready=false] :is(.app-sidebar,.app-main){transition:none}
 .topbar{height:48px;flex-shrink:0;background:var(--card);border-bottom:1px solid var(--shell-border);display:flex;align-items:center;justify-content:space-between;padding:0 24px;gap:12px}
 .app-sidebar svg,.topbar svg{stroke-width:1.65}
 .breadcrumb{font-size:13px;color:var(--muted-foreground)}
@@ -230,8 +282,10 @@
  .settings-layout{grid-template-columns:160px minmax(0,1fr);gap:24px}
 }
 @media(max-width:900px){
+ .app-layout{--sidebar-width:0px}
+ .app-layout[data-sidebar-collapsed=true]{--sidebar-width:0px}
  .app-sidebar{display:none}
- .app-main{margin-left:0;width:100%}
+ .app-main{margin-left:0;width:100%;transition:none}
  .mobile-menu{display:inline-flex}
  .topbar{padding:0 24px;justify-content:start}
  .topbar-right{margin-left:auto}

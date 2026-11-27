@@ -1,8 +1,10 @@
 "use client";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import Link from "next/link";
+import Link from "./workspace-link";
 import { Plus, Save, Upload, Trash2, ArrowLeft, FileCheck2, Layers, Archive, RotateCcw, CalendarClock, X, Info } from "lucide-react";
-import { api, Shell, useWorkspace, ErrorNotice, Choice, Status } from "./app-kit";
+import { api, useWorkspace, ErrorNotice, Choice, Status } from "./app-kit";
+import { ContentLoader } from "./content-loader";
+import { useStandaloneNavigationGuard } from "./navigation-guard";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -52,6 +54,7 @@ function useConfirmationPresence(open:boolean,busy:boolean,onOpenChange:(open:bo
 }
 
 function useEnvelopeGuard(guard:EnvelopeGuard,onGuardChange?:EditorSession["onGuardChange"]) {
+  useStandaloneNavigationGuard(guard,!onGuardChange);
   useEffect(()=>{onGuardChange?.(guard);},[guard.dirty,guard.busy,onGuardChange]);
   useEffect(()=>{
     if(!guard.dirty&&!guard.busy)return;
@@ -83,7 +86,7 @@ function WizardProgress({step}:{step:EnvelopeStep}) {
 
 export function CreateEnvelope() {
   const w=useWorkspace();
-  return <Shell {...w}><EnvelopeCreation workspace={w.workspace}/></Shell>;
+  return <EnvelopeCreation workspace={w.workspace} onSaved={w.refresh}/>;
 }
 
 function EnvelopeCreation({workspace,...session}:{workspace:WorkspaceView}&EditorSession) {
@@ -101,7 +104,7 @@ function EnvelopeCreation({workspace,...session}:{workspace:WorkspaceView}&Edito
 
 export function Composer({id}:{id:string}) {
   const w=useWorkspace();
-  return <Shell {...w}><EnvelopeEditor id={id} workspace={w.workspace}/></Shell>;
+  return <EnvelopeEditor key={id} id={id} workspace={w.workspace} onSaved={w.refresh}/>;
 }
 
 export function EnvelopeEditor({id,workspace,initialEnvelope,creation=false,embedded=false,onSaved,onGuardChange,onConfirmationPresence,onDismiss}:{id:string;workspace:WorkspaceView;initialEnvelope?:EnvelopeView;creation?:boolean;embedded?:boolean}&EditorSession) {
@@ -137,7 +140,7 @@ export function EnvelopeEditor({id,workspace,initialEnvelope,creation=false,embe
   }
   function recipient(index:number,v:Partial<RecipientView>){if(e)patch({recipients:e.recipients.map((r,i)=>i===index?{...r,...v}:r)});}
   function continueStep(){void run(async()=>{if(!e)return;const problem=envelopeStepError(e,step);if(problem)throw new Error(problem);await save(step);setStep(value=>Math.min(value+1,4) as EnvelopeStep);setPreview(false);});}
-  if(!e)return <>{onDismiss&&<EnvelopeHeading title={workspace.envelopes.find(envelope=>envelope.id===id)?.title??"Loading envelope…"} description="Loading saved documents and recipients." onDismiss={onDismiss}/>}<div className="envelope-loading"><ErrorNotice error={error}/>{!error&&<p role="status">Loading envelope…</p>}</div></>;
+  if(!e)return <>{onDismiss&&<EnvelopeHeading title={workspace.envelopes.find(envelope=>envelope.id===id)?.title??"Loading envelope…"} description="Loading saved documents and recipients." onDismiss={onDismiss}/>}<div className="envelope-loading"><ErrorNotice error={error}/>{!error&&<ContentLoader label="Loading envelope"/>}</div></>;
   return <Tabs value={wizard?"details":tab} onValueChange={setTab} className="envelope-editor" aria-busy={guardedBusy}>
     {!embedded&&<Link href="/envelopes" className="back-link"><ArrowLeft size={16}/>All envelopes</Link>}
     <EnvelopeHeading title={e.title} description={`Version ${e.version} · ${e.documents.length} private PDFs · ${e.recipients.length} recipients`} state={e.state} onDismiss={onDismiss} busy={guardedBusy} actions={editable&&<><Button variant="ghost" className="sender-preview" disabled={guardedBusy} onClick={()=>setPreview(!preview)}>{preview?"Edit fields":"Sender preview"}</Button><Button disabled={guardedBusy} onClick={()=>run(async()=>{await save(wizard?step:undefined);})}><Save/>Save draft</Button></>}>

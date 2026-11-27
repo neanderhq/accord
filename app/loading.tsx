@@ -1,3 +1,3 @@
-import { WorkspaceLoader } from "@/components/accord-brand";
+import { ContentLoader } from "@/components/content-loader";
 
-export default function Loading(){return <WorkspaceLoader/>;}
+export default function Loading(){return <ContentLoader/>;}
