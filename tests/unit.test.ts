@@ -27,7 +27,7 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import { Shell,ApiError } from "../components/app-kit";
 import { WorkspaceLoader } from "../components/accord-brand";
 import RouteLoading from "../app/loading";
-import { Composer,EnvelopeEditor } from "../components/composer";
+import { Composer,EnvelopeEditor,EnvelopeNotice } from "../components/composer";
 import { SettingsWorkspace,SettingsPage,SettingsNavigation,SettingsDeliveryLog,loadSettingsSection } from "../components/settings";
 import { settingsSections,settingsHref,canAccessSettingsSection,brandingSettingsPayload,webhookSettingsPayload,type SettingsSectionId } from "../app/settings/sections";
 import SettingsIndex from "../app/settings/page";
@@ -791,6 +791,40 @@ test("drawer uses one real dialog title with status, default Details and retaine
  assert.equal((wizard.match(/data-slot="dialog-title"/g)??[]).length,1);
  assert.doesNotMatch(wizard,/role="tablist"|Activity · UTC/);
  assert.match(wizard,/Envelope creation steps/);
+});
+
+test("unsaved notices announce their message with a decorative info icon while saved and other notices keep their own styling",()=>{
+ assert.equal(renderToStaticMarkup(createElement(EnvelopeNotice,{notice:""})),"");
+ for(const unsaved of ["Unsaved changes","Current step saved. Later steps have unsaved changes."]){
+  const markup=renderToStaticMarkup(createElement(EnvelopeNotice,{notice:{unsaved}}));
+  assert.match(markup,/<p class="notice notice-unsaved" role="status"><svg/);
+  const icon=markup.match(/<svg\b[^>]*>/)?.[0];assert.ok(icon);assert.match(icon,/aria-hidden="true"/);assert.match(icon,/class="[^"]*lucide-info/);
+  assert.ok(markup.includes(`<span>${unsaved}</span>`));
+ }
+ for(const notice of ["Draft saved to the database","Envelope shared.","Documents saved privately; review their fields."]){
+  const markup=renderToStaticMarkup(createElement(EnvelopeNotice,{notice}));
+  assert.match(markup,/<p class="notice" role="status">/);assert.doesNotMatch(markup,/notice-unsaved|<svg/);
+ }
+ const rules=new Map<string,Map<string,string>>();
+ postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(rule=>{const declarations=new Map<string,string>();rule.walkDecls(decl=>{declarations.set(decl.prop,decl.value);});rules.set(rule.selector,declarations);});
+ const unsaved=rules.get(".envelope-feedback .notice-unsaved")!;
+ assert.equal(unsaved.get("color"),"#1d4ed8");assert.match(unsaved.get("background")!,/#2563eb 8%/);
+ assert.equal(rules.get(".notice")?.get("background"),"var(--muted)");
+});
+
+test("preview selectors retain accessible labels and empty-state disabling with scoped borderless four-pixel spacing",()=>{
+ const render=(envelope=drawerEnvelope)=>renderToStaticMarkup(createElement(EnvelopeEditor,{id:envelope.id,workspace:drawerWorkspace,initialEnvelope:envelope,embedded:true}));
+ const toolbar=render().match(/class="preview-surface"><div class="preview-toolbar">(.*?)<\/div>/)?.[1];
+ assert.ok(toolbar);assert.equal((toolbar.match(/role="combobox"/g)??[]).length,2);
+ assert.match(toolbar,/aria-label="Preview document"/);assert.match(toolbar,/aria-label="Preview page"/);
+ const empty=render({...drawerEnvelope,documents:[]}).match(/class="preview-toolbar">(.*?)<\/div>/)?.[1];
+ assert.ok(empty);assert.match(empty,/<button[^>]*disabled=""[^>]*aria-label="Preview document"/);assert.doesNotMatch(empty,/aria-label="Preview page"/);
+ const rules=new Map<string,Map<string,string>>();
+ postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(rule=>{const declarations=new Map<string,string>();rule.walkDecls(decl=>{declarations.set(decl.prop,decl.value);});rules.set(rule.selector,declarations);});
+ const trigger=rules.get(".content-area .envelope-editor .preview-toolbar [data-slot=select-trigger]")!;
+ for(const [key,value] of [["gap","4px"],["padding","0"],["border","0"],["background","transparent"],["justify-content","flex-start"],["min-height","44px"]])assert.equal(trigger.get(key),value);
+ assert.equal(rules.get(".envelope-editor .preview-toolbar")?.get("position"),"absolute");
+ assert.equal(rules.get(".envelope-editor .preview-toolbar [data-slot=select-value]")?.get("text-overflow"),"ellipsis");
 });
 
 test("drawer links keep modified clicks and new-tab behavior while ordinary clicks embed the editor",()=>{

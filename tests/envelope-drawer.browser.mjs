@@ -18,11 +18,12 @@ const check=(name)=>{checks.push(name);console.log(`PASS ${name}`);};
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const wait=async(fn,message)=>{for(let i=0;i<100;i++){if(await fn())return;await delay(50);}throw new Error(message);};
 
-async function fixtureContext({role="admin",width=1440,height=960}={}) {
-  const context=await browser.newContext({viewport:{width,height},serviceWorkers:"block"});
+async function fixtureContext({role="admin",width=1440,height=960,previewDocuments=false,touch=false}={}) {
+  const context=await browser.newContext({viewport:{width,height},serviceWorkers:"block",hasTouch:touch});
   const document={id:randomUUID(),name:"Fixture agreement.pdf",size:bytes.length,sha256:"0".repeat(64),geometry:Array.from({length:2},()=>({x:0,y:0,width:612,height:792,rotation:0}))};
   const recipient={id:randomUUID(),name:"Avery Morgan",email:"avery@client.test",routing_order:1,status:"pending"};
   const existing={id:randomUUID(),owner_id:"fixture-owner",owner_name:"Alex Rivera",title:"Fixture existing agreement",state:"draft",version:1,routing:"parallel",folder:"Fixture folder",tags:["fixture"],created_at:"2026-11-27T00:00:00Z",documents:[document],recipients:[recipient],fields:[{id:randomUUID(),documentId:document.id,recipientId:recipient.id,type:"signature",page:0,x:20,y:20,width:180,height:40,required:true}],events:[{id:"fixture-event",event:"envelope_created",actor:"Alex Rivera",created_at:"2026-11-27T00:15:00Z",data:{}}],outputs:[],deliveries:[]};
+  if(previewDocuments)existing.documents.push({...structuredClone(document),id:randomUUID(),name:`Fixture ${"long agreement name ".repeat(12)}appendix.pdf`});
   const envelopes=new Map([[existing.id,existing]]);
   const state={role,created:0,saves:0,uploads:0,uploadTypes:[],sends:0,workspaceReads:0,failCreate:false,failSave:false,failUpload:false,failSend:false,hold:null,blocked:[],errors:[],copies:new Map()};
   const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
@@ -104,7 +105,30 @@ async function layout(drawer){
   assert.equal(await drawer.locator('input[type="file"]').evaluate(el=>getComputedStyle(el).clipPath),"inset(50%)");
 }
 
+async function previewLayout(drawer,{truncated}={}){
+  await drawer.locator(".preview-surface").scrollIntoViewIfNeeded();
+  await drawer.locator(".pdf-loading").waitFor({state:"hidden"});
+  const result=await drawer.locator(".preview-surface").evaluate(el=>{
+    const rect=node=>{const {x,y,width,height,right,bottom}=node.getBoundingClientRect();return {x,y,width,height,right,bottom};};
+    const toolbar=el.querySelector(".preview-toolbar"),frame=el.querySelector(".pdf-frame"),canvas=el.querySelector(".pdf-canvas"),triggers=[...toolbar.querySelectorAll('[data-slot="select-trigger"]')];
+    return {toolbar:rect(toolbar),frame:rect(frame),canvas:rect(canvas),position:getComputedStyle(toolbar).position,background:getComputedStyle(frame).backgroundColor,overflow:el.scrollWidth>el.clientWidth,triggers:triggers.map(trigger=>{
+      const value=trigger.querySelector('[data-slot="select-value"]'),icon=trigger.querySelector("svg"),style=getComputedStyle(trigger);
+      return {box:rect(trigger),gap:rect(icon).x-rect(value).right,padding:[style.paddingLeft,style.paddingRight],border:style.borderWidth,background:style.backgroundColor,justify:style.justifyContent,truncated:value.scrollWidth>value.clientWidth};
+    })};
+  });
+  assert.equal(result.position,"absolute");assert.equal(result.background,"rgb(255, 255, 255)");assert.equal(result.overflow,false);
+  assert.ok(result.toolbar.y>=result.frame.y&&result.toolbar.bottom<=result.canvas.y,"Selectors must stay in the preview gutter, above PDF content");
+  const [document,page]=result.triggers;assert.equal(result.triggers.length,2);
+  assert.ok(document.box.x>=result.frame.x&&page.box.right<=result.frame.right);assert.ok(document.box.right+15<=page.box.x);
+  assert.equal(document.box.y,page.box.y);if(truncated!==undefined)assert.equal(document.truncated,truncated);
+  for(const trigger of result.triggers){
+    assert.ok(Math.abs(trigger.gap-4)<0.1,JSON.stringify(trigger));assert.deepEqual(trigger.padding,["0px","0px"]);
+    assert.equal(trigger.border,"0px");assert.equal(trigger.background,"rgba(0, 0, 0, 0)");assert.match(trigger.justify,/^(flex|flow)-start$/);assert.ok(trigger.box.height>=44);
+  }
+}
+
 try {
+  if(process.env.ACCORD_DRAWER_PREVIEW_ONLY!=="1"){
   const {context,page,state,envelopes,existing}=await fixtureContext();
   const drawer=page.locator(".envelope-drawer");
   const details=page.locator(".envelope-drawer");
@@ -177,6 +201,7 @@ try {
   await drawer.getByLabel("Folder",{exact:true}).fill("Saved fixture folder");
   await drawer.getByRole("button",{name:"Back",exact:true}).click();await drawer.getByLabel("Envelope title",{exact:true}).fill("Fixture renamed agreement");
   await drawer.getByRole("button",{name:"Continue",exact:true}).click();await drawer.getByRole("heading",{name:"Documents & details",exact:true}).waitFor();assert.equal(await drawer.getByLabel("Folder",{exact:true}).inputValue(),"Saved fixture folder");
+  assert.equal(await drawer.locator(".notice-unsaved").textContent(),"Current step saved. Later steps have unsaved changes.");
   assert.equal(created.id,[...envelopes.values()].find(e=>e.id!==existing.id).id);assert.equal(state.created,1);assert.equal(state.uploads,1);
   state.failSave=true;await drawer.getByRole("button",{name:"Continue",exact:true}).click();await drawer.getByText("This envelope changed. Reload it before saving.").waitFor();assert.equal(await drawer.getByRole("heading",{name:"Documents & details",exact:true}).isVisible(),true);
   await drawer.getByRole("button",{name:"Continue",exact:true}).click();await drawer.getByRole("heading",{name:"Recipients & routing",exact:true}).waitFor();
@@ -269,5 +294,43 @@ try {
   releaseActivitySave();uploads.state.hold=null;await uploadDrawer.getByText("Draft saved to the database",{exact:true}).waitFor();assert.equal(uploads.state.saves,1);assert.equal(uploads.existing.title,"Saved from Activity");
   assert.deepEqual(uploads.state.blocked,[]);assert.deepEqual(uploads.state.errors,[]);await uploads.context.close();
   check("Choose files opens the multiple-file picker, preserves PDF/DOCX request types and version sequencing, shows names below, rejects over 8 MB locally and contains labels/widgets from 320px to desktop");
+  }
+  for(const width of [1440,390,320]){
+    const controls=await fixtureContext({width,height:960,previewDocuments:true,touch:width<500});
+    const p=controls.page;await p.locator(".document-link").click();const view=p.locator(".envelope-drawer");await view.getByLabel("Title",{exact:true}).waitFor();
+    await previewLayout(view);
+    const documentMenu=view.getByRole("combobox",{name:"Preview document",exact:true}),pageMenu=view.getByRole("combobox",{name:"Preview page",exact:true});
+    const activate=async locator=>width<500?locator.tap():locator.click();
+    await activate(pageMenu.locator('[data-slot="select-value"]'));await activate(p.getByRole("option",{name:"Page 2",exact:true}));await view.getByLabel("PDF page 2",{exact:true}).waitFor();
+    await activate(documentMenu.locator('[data-slot="select-value"]'));await p.getByRole("option",{name:controls.existing.documents[0].name,exact:true}).waitFor();
+    await p.keyboard.press("Escape");assert.equal(await view.getAttribute("data-state"),"open");
+    await activate(documentMenu);await activate(p.getByRole("option",{name:controls.existing.documents[1].name,exact:true}));
+    assert.equal(await pageMenu.textContent(),"Page 1");await view.getByLabel("PDF page 1",{exact:true}).waitFor();await previewLayout(view,{truncated:true});
+    await documentMenu.focus();await p.keyboard.press("Tab");assert.equal(await pageMenu.evaluate(el=>document.activeElement===el),true);
+    assert.equal(await pageMenu.evaluate(el=>getComputedStyle(el).outlineWidth),"2px");
+    await p.keyboard.press("Enter");const firstPage=p.getByRole("option",{name:"Page 1",exact:true}),secondPage=p.getByRole("option",{name:"Page 2",exact:true});await firstPage.waitFor();
+    await wait(()=>firstPage.evaluate(el=>document.activeElement===el),"Selected page option did not receive keyboard focus");await p.keyboard.press("ArrowDown");
+    await wait(()=>secondPage.evaluate(el=>document.activeElement===el),"ArrowDown did not focus the next page");await p.keyboard.press("Enter");
+    assert.equal(await pageMenu.textContent(),"Page 2");await view.getByLabel("PDF page 2",{exact:true}).waitFor();
+    await view.getByRole("tab",{name:"Activity",exact:true}).click();await view.getByRole("tab",{name:"Details",exact:true}).click();
+    assert.equal(await documentMenu.textContent(),controls.existing.documents[1].name);assert.equal(await pageMenu.textContent(),"Page 2");
+    await view.getByLabel("Title",{exact:true}).fill(`Fixture blue notice ${width}`);
+    const notice=view.locator(".notice");assert.equal(await notice.getAttribute("role"),"status");assert.equal(await notice.textContent(),"Unsaved changes");
+    assert.equal(await notice.locator("svg.lucide-info").getAttribute("aria-hidden"),"true");
+    const info=await notice.evaluate(el=>{const icon=el.querySelector("svg"),text=el.querySelector("span"),style=getComputedStyle(el),paint=new OffscreenCanvas(1,1).getContext("2d");paint.fillStyle=style.backgroundColor;paint.fillRect(0,0,1,1);return {color:style.color,background:[...paint.getImageData(0,0,1,1).data],iconLeft:icon.getBoundingClientRect().right<text.getBoundingClientRect().left};});
+    assert.equal(info.color,"rgb(29, 78, 216)");assert.deepEqual(info.background,[238,243,253,255]);assert.equal(info.iconLeft,true);
+    await view.getByRole("button",{name:"Close",exact:true}).click();const discard=p.getByRole("alertdialog",{name:"Discard unsaved changes?"});await discard.getByRole("button",{name:"Keep editing",exact:true}).click();
+    let finishSave;controls.state.hold=new Promise(resolve=>{finishSave=resolve;});await view.getByRole("button",{name:"Save draft",exact:true}).click();
+    await wait(()=>documentMenu.isDisabled(),"Document selector was not disabled while saving");assert.equal(await pageMenu.isDisabled(),true);assert.equal(await view.getByRole("button",{name:"Close",exact:true}).isDisabled(),true);
+    await p.keyboard.press("Escape");assert.equal(await view.getAttribute("data-state"),"open");finishSave();controls.state.hold=null;
+    await notice.getByText("Draft saved to the database",{exact:true}).waitFor();assert.equal(await notice.getAttribute("class"),"notice");assert.equal(await notice.locator("svg").count(),0);
+    assert.equal(await documentMenu.isDisabled(),false);assert.equal(await pageMenu.isDisabled(),false);
+    await activate(documentMenu);await activate(p.getByRole("option",{name:controls.existing.documents[0].name,exact:true}));await view.getByLabel("PDF page 1",{exact:true}).waitFor();
+    await view.locator(".pdf-loading").waitFor({state:"hidden"});const field=view.getByRole("button",{name:"signature field required",exact:true});await field.click();assert.match(await field.getAttribute("class"),/selected/);
+    assert.equal(await view.getByLabel("x (pt)",{exact:true}).inputValue(),"20");
+    await previewLayout(view);await documentMenu.hover();await view.screenshot({path:`${evidence}/compact-preview-${width}.png`});
+    assert.equal(controls.state.saves,1);assert.equal(controls.state.sends,0);assert.deepEqual(controls.state.blocked,[]);assert.deepEqual(controls.state.errors,[]);await controls.context.close();
+    check(`${width}px preview overlays stay above readable PDFs with text-only 4px chevrons, long-name truncation, touch/keyboard menus, document reset, retained tabs, blue live unsaved notice and preserved save/dismiss guards`);
+  }
   console.log(JSON.stringify({passed:checks.length,checks,evidence}));
 } finally {clearTimeout(deadline);await browser.close();}
