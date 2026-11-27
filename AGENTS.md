@@ -19,6 +19,17 @@
   Neander Publish verification. Publish without bypassing protected-main rules.
 - Before Next.js changes, read the relevant installed `node_modules/next/dist/docs/` guide.
 
+## UI development
+
+- Before creating or updating screens, read and apply the relevant parts of the
+  [template UI refinement skill](docs/skills/template-ui-refinement/SKILL.md).
+- Reuse existing shared layouts, navigation, UI primitives, theme tokens and
+  common feedback/loading patterns so new screens stay consistent.
+- Prefer minimal shared variants over duplicated per-page CSS. When changing
+  shared patterns, check existing callers for regressions.
+- Preserve domain behavior, security and accessibility. Verify relevant desktop,
+  mobile and keyboard states for new or updated screens.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know

@@ -48,7 +48,7 @@ async function main() {
     await page.getByLabel('Email address', { exact: true }).fill('admin@accord.test');
     await page.getByLabel('Password', { exact: true }).fill(password);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.getByRole('heading', { name: 'Every signature. One place.', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
     await page.getByRole('link', { name: 'Studio services agreement', exact: false }).first().waitFor();
     const workspace = await json(await context.request.get(`${origin.origin}/api/workspace`));
     assert.equal(workspace.company.id, COMPANY); assert.equal(workspace.role, 'admin'); assert.equal(workspace.envelopes.length, 3);

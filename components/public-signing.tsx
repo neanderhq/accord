@@ -1,19 +1,19 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { AuthFrame } from "./auth-frame";
 import { api, ErrorNotice } from "./app-kit";
 import { Button } from "./ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Card, CardContent, CardHeader } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 
 function StartFrame({title,children}:{title:string;children:ReactNode}) {
-  return <main className="mx-auto flex min-h-svh max-w-xl flex-col justify-center gap-5 px-4 py-10">
-    <p className="text-sm font-semibold uppercase tracking-wider text-primary">Accord</p>
-    <Card><CardHeader><CardTitle><h1 className="text-2xl font-semibold leading-tight break-words">{title}</h1></CardTitle></CardHeader>
+  return <AuthFrame>
+    <Card><CardHeader><h1 data-slot="card-title">{title}</h1></CardHeader>
       <CardContent className="form-stack">{children}</CardContent>
     </Card>
-  </main>;
+  </AuthFrame>;
 }
 
 const progress:Record<string,string>={
