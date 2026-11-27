@@ -93,6 +93,7 @@ try {
   await page.getByRole("button",{name:"Additional filters"}).click();await page.getByLabel("Recipient",{exact:true}).fill("Avery");
   await page.evaluate(()=>{window.drawerSentinel="preserve-dashboard";});
   await page.locator(".document-link").click();await details.getByLabel("Title",{exact:true}).waitFor();
+  await details.evaluate(async el=>{await Promise.all(el.getAnimations().map(a=>a.finished.catch(()=>{})));});
   const box=await details.boundingBox();await details.screenshot({path:`${evidence}/desktop-details.png`});assert.equal(box.x,288);assert.equal(box.width,1152);
   assert.equal(await details.locator(".app-sidebar,.workspace-loading,.app-layout").count(),0);
   await details.getByLabel("Title",{exact:true}).fill("Fixture unsaved title");await page.keyboard.press("Escape");
@@ -137,10 +138,20 @@ try {
   await drawer.getByRole("button",{name:"Back",exact:true}).click();await drawer.getByRole("heading",{name:"Signing fields",exact:true}).waitFor();assert.equal(await drawer.locator(".pdf-field").count(),1);
   await drawer.getByRole("button",{name:"Continue",exact:true}).click();await drawer.getByRole("heading",{name:"Review",exact:true}).waitFor();
   await drawer.screenshot({path:`${evidence}/desktop-review.png`});
-  await drawer.getByRole("button",{name:"Review & freeze for signing",exact:true}).click();
-  const freeze=page.getByRole("dialog",{name:"Freeze this envelope for signing?",exact:true});await freeze.waitFor();await page.keyboard.press("Escape");await freeze.waitFor({state:"hidden"});assert.equal(await drawer.isVisible(),true);
+  const freeze=page.getByRole("dialog",{name:"Freeze this envelope for signing?",exact:true}),review=drawer.getByRole("button",{name:"Review & freeze for signing",exact:true});
+  const draftBeforeEscape=structuredClone(created);
+  for(let attempt=0;attempt<3;attempt++){
+    await review.click();await freeze.waitFor();await page.keyboard.press("Escape");await freeze.waitFor({state:"detached"});
+    assert.equal(await drawer.isVisible(),true);assert.equal(await drawer.getAttribute("data-state"),"open");assert.equal(await page.getByRole("alertdialog").count(),0);
+    assert.deepEqual(created,draftBeforeEscape);assert.equal(state.sends,0);
+    await page.waitForFunction(()=>document.activeElement?.tagName==="BUTTON"&&document.activeElement.textContent?.includes("Review & freeze for signing"));
+    assert.equal(await page.locator('[data-slot="dialog-overlay"]').count(),1);
+  }
   await drawer.getByRole("button",{name:"Review & freeze for signing",exact:true}).click();state.failSend=true;await freeze.getByRole("button",{name:"Confirm & freeze",exact:true}).click();await freeze.getByText("Fixture send failed. Try again.").waitFor();assert.equal(state.sends,0);
-  await freeze.getByRole("button",{name:"Confirm & freeze",exact:true}).click();await freeze.waitFor({state:"hidden"});await drawer.getByText("Sent documents, fields, recipients and routing are frozen.",{exact:false}).waitFor();assert.equal(state.sends,1);
+  let releaseFreeze;state.hold=new Promise(resolve=>{releaseFreeze=resolve;});
+  await freeze.getByRole("button",{name:"Confirm & freeze",exact:true}).click();await freeze.getByRole("button",{name:"Saving…",exact:true}).waitFor();await page.keyboard.press("Escape");
+  assert.equal(await freeze.getAttribute("data-state"),"open");assert.equal(await page.locator(".envelope-drawer").getAttribute("data-state"),"open");assert.equal(state.sends,0);
+  releaseFreeze();state.hold=null;await freeze.waitFor({state:"hidden"});await drawer.getByText("Sent documents, fields, recipients and routing are frozen.",{exact:false}).waitFor();assert.equal(state.sends,1);
   assert.equal(state.created,1);assert.equal(state.uploads,1);assert.equal(await page.evaluate(()=>window.drawerSentinel),"preserve-dashboard");assert.equal(page.url(),`${origin}/envelopes`);
   await drawer.getByRole("button",{name:"Close",exact:true}).click();await drawer.waitFor({state:"hidden"});
   await page.getByLabel("Recipient",{exact:true}).fill("");await page.getByRole("textbox",{name:"Search envelopes"}).fill("Fixture renamed agreement");await page.locator(".document-link").filter({hasText:"Fixture renamed agreement"}).waitFor();
@@ -165,6 +176,7 @@ try {
 
   const mobile=await fixtureContext({width:390,height:844});
   await mobile.page.getByRole("link",{name:"Create envelope",exact:true}).click();const mobileDrawer=mobile.page.getByRole("dialog",{name:"Create an envelope",exact:true});await mobileDrawer.waitFor();
+  await mobileDrawer.evaluate(async el=>{await Promise.all(el.getAnimations().map(a=>a.finished.catch(()=>{})));});
   const mobileBox=await mobileDrawer.boundingBox();assert.equal(mobileBox.x,0);assert.equal(mobileBox.width,390);
   await mobileDrawer.getByLabel("Envelope title",{exact:true}).fill("Fixture mobile draft");await mobileDrawer.getByRole("button",{name:"Continue",exact:true}).click();await mobileDrawer.getByRole("heading",{name:"Documents & details",exact:true}).waitFor();
   assert.equal(await mobileDrawer.evaluate(el=>el.scrollWidth<=el.clientWidth),true);await mobileDrawer.screenshot({path:`${evidence}/mobile-documents.png`});

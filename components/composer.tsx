@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Plus, Save, Upload, Trash2, ArrowLeft, FileCheck2, Layers, Archive, RotateCcw, CalendarClock } from "lucide-react";
 import { api, Shell, useWorkspace, PageHeading, ErrorNotice, Choice, Status } from "./app-kit";
@@ -19,7 +19,19 @@ import type { EnvelopeView, RecipientView, WorkspaceView } from "@/lib/ui-types"
 import { envelopePermissions, envelopeStepError, envelopeSteps, envelopeDraftPayload, envelopeForStep, mergeSavedEnvelopeStep, type EnvelopeStep, type EnvelopeGuard } from "@/lib/envelope-wizard";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "./ui/alert-dialog";
 
-type EditorSession = {onSaved?:()=>void;onGuardChange?:(guard:EnvelopeGuard)=>void};
+type Confirmation = {dismiss:()=>void};
+type ConfirmationPresence = (confirmation:Confirmation,present:boolean)=>void;
+type EditorSession = {onSaved?:()=>void;onGuardChange?:(guard:EnvelopeGuard)=>void;onConfirmationPresence?:ConfirmationPresence};
+
+function useConfirmationPresence(open:boolean,busy:boolean,onOpenChange:(open:boolean)=>void,onPresenceChange?:ConfirmationPresence) {
+  const latest=useRef({open,busy,onOpenChange});
+  const confirmation=useRef<Confirmation>({dismiss(){const current=latest.current;if(current.open&&!current.busy)current.onOpenChange(false);}});
+  // Own Escape from the DOM commit, before Radix's passive layer registration.
+  // Keep ownership throughout the exit until Radix has returned focus.
+  useLayoutEffect(()=>{latest.current={open,busy,onOpenChange};if(open)onPresenceChange?.(confirmation.current,true);},[open,busy,onOpenChange,onPresenceChange]);
+  useLayoutEffect(()=>()=>onPresenceChange?.(confirmation.current,false),[onPresenceChange]);
+  return ()=>{if(latest.current.open)return false;onPresenceChange?.(confirmation.current,false);return true;};
+}
 
 function useEnvelopeGuard(guard:EnvelopeGuard,onGuardChange?:EditorSession["onGuardChange"]) {
   useEffect(()=>{onGuardChange?.(guard);},[guard.dirty,guard.busy,onGuardChange]);
@@ -32,13 +44,19 @@ function useEnvelopeGuard(guard:EnvelopeGuard,onGuardChange?:EditorSession["onGu
 }
 
 export function EnvelopeDrawer({target,workspace,onClose,onSaved,returnFocus}:{target:{kind:"create"}|{kind:"detail";id:string};workspace:WorkspaceView;onClose:()=>void;onSaved:()=>void;returnFocus:()=>void}) {
+  const [open,setOpen]=useState(true),closing=useRef(false),closed=useRef(false),discardFocus=useRef<HTMLElement|null>(null),confirmations=useRef(new Set<Confirmation>());
   const [guard,setGuard]=useState<EnvelopeGuard>({dirty:false,busy:false}),guardRef=useRef(guard),[discard,setDiscard]=useState(false);
   const onGuardChange=useCallback((next:EnvelopeGuard)=>{guardRef.current=next;setGuard(next);},[]);
-  function dismiss(){if(guardRef.current.busy)return;if(guardRef.current.dirty)setDiscard(true);else onClose();}
-  return <Dialog open onOpenChange={open=>{if(!open)dismiss();}}><DialogContent variant="drawer" closeDisabled={guard.busy} onEscapeKeyDown={event=>{if(guardRef.current.busy)event.preventDefault();}} onInteractOutside={event=>{if(guardRef.current.busy)event.preventDefault();}} onCloseAutoFocus={event=>{event.preventDefault();returnFocus();}}>
+  const onConfirmationPresence=useCallback<ConfirmationPresence>((confirmation,present)=>{if(present)confirmations.current.add(confirmation);else confirmations.current.delete(confirmation);},[]);
+  const releaseDiscard=useConfirmationPresence(discard,guard.busy,setDiscard,onConfirmationPresence);
+  function close(){if(closing.current||guardRef.current.busy)return;closing.current=true;setOpen(false);}
+  function dismiss(){if(closing.current||guardRef.current.busy||confirmations.current.size)return;if(guardRef.current.dirty){discardFocus.current=document.activeElement as HTMLElement;setDiscard(true);}else close();}
+  // Radix keeps Content present for its CSS exit. Only release the editor and
+  // refresh the dashboard after its focus scope has actually unmounted.
+  return <Dialog open={open} onOpenChange={next=>{if(!next)dismiss();}}><DialogContent variant="drawer" inert={!open} closeDisabled={guard.busy||!open} onEscapeKeyDown={event=>{const confirmation=Array.from(confirmations.current).at(-1);if(guardRef.current.busy||confirmation)event.preventDefault();if(!guardRef.current.busy)confirmation?.dismiss();}} onInteractOutside={event=>{if(guardRef.current.busy||confirmations.current.size)event.preventDefault();}} onCloseAutoFocus={event=>{event.preventDefault();if(!closing.current||closed.current)return;closed.current=true;returnFocus();onClose();}}>
     <DialogHeader className="envelope-drawer-header"><DialogTitle>{target.kind==="create"?"Create an envelope":"Envelope details"}</DialogTitle><DialogDescription>{target.kind==="create"?"Prepare your private draft, then review it before signing.":"Review documents, recipients and signing activity."}</DialogDescription></DialogHeader>
-    <div className="envelope-drawer-body content-area">{target.kind==="create"?<EnvelopeCreation workspace={workspace} onSaved={onSaved} onGuardChange={onGuardChange}/>:<EnvelopeEditor id={target.id} workspace={workspace} embedded onSaved={onSaved} onGuardChange={onGuardChange}/>}</div>
-    <AlertDialog open={discard} onOpenChange={setDiscard}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle><AlertDialogDescription>Your saved draft and uploaded documents will remain. Changes you haven’t saved will be discarded.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep editing</AlertDialogCancel><AlertDialogAction onClick={onClose}>Discard changes</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <div className="envelope-drawer-body content-area">{target.kind==="create"?<EnvelopeCreation workspace={workspace} onSaved={onSaved} onGuardChange={onGuardChange} onConfirmationPresence={onConfirmationPresence}/>:<EnvelopeEditor id={target.id} workspace={workspace} embedded onSaved={onSaved} onGuardChange={onGuardChange} onConfirmationPresence={onConfirmationPresence}/>}</div>
+    <AlertDialog open={discard} onOpenChange={setDiscard}><AlertDialogContent onCloseAutoFocus={event=>{const released=releaseDiscard();event.preventDefault();if(released&&!closing.current)discardFocus.current?.focus({preventScroll:true});}}><AlertDialogHeader><AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle><AlertDialogDescription>Your saved draft and uploaded documents will remain. Changes you haven’t saved will be discarded.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep editing</AlertDialogCancel><AlertDialogAction onClick={close}>Discard changes</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </DialogContent></Dialog>;
 }
 
@@ -69,13 +87,14 @@ export function Composer({id}:{id:string}) {
   return <Shell {...w}><EnvelopeEditor id={id} workspace={w.workspace}/></Shell>;
 }
 
-export function EnvelopeEditor({id,workspace,initialEnvelope,creation=false,embedded=false,onSaved,onGuardChange}:{id:string;workspace:WorkspaceView;initialEnvelope?:EnvelopeView;creation?:boolean;embedded?:boolean}&EditorSession) {
+export function EnvelopeEditor({id,workspace,initialEnvelope,creation=false,embedded=false,onSaved,onGuardChange,onConfirmationPresence}:{id:string;workspace:WorkspaceView;initialEnvelope?:EnvelopeView;creation?:boolean;embedded?:boolean}&EditorSession) {
   const reviewButton = useRef<HTMLButtonElement>(null),savedEnvelope=useRef<EnvelopeView|null>(initialEnvelope??null);
   const [colleagues,setColleagues]=useState<{id:string;name:string;email:string;role:string}[]>([]),[shares,setShares]=useState<{user_id:string;name?:string;email?:string}[]>([]),[reminderDays,setReminderDays]=useState(0),[retentionDays,setRetentionDays]=useState(365),[deleteOpen,setDeleteOpen]=useState(false),[deleteReason,setDeleteReason]=useState("");
   const [e,setE]=useState<EnvelopeView|null>(initialEnvelope??null),[error,setError]=useState<Error|null>(null),[busy,setBusy]=useState(false),[notice,setNotice]=useState(""),[selected,setSelected]=useState(""),[docId,setDocId]=useState(""),[page,setPage]=useState(0),[confirm,setConfirm]=useState(false),[preview,setPreview]=useState(false),[days,setDays]=useState(7),[reason,setReason]=useState(""),[links,setLinks]=useState<{name:string;email:string;path:string}[]>([]),[template,setTemplate]=useState({name:"",roles:""});
   const [dirty,setDirty]=useState(false),[copyGuard,setCopyGuard]=useState<EnvelopeGuard>({dirty:false,busy:false}),[extraDirty,setExtraDirty]=useState({reason:false,template:false,schedule:false,delete:false}),[step,setStep]=useState<EnvelopeStep>(1),working=useRef(false),stepHeading=useRef<HTMLHeadingElement>(null);
   const {editable,canManage}=envelopePermissions(workspace,e),wizard=creation&&editable;
   const guardedBusy=busy||copyGuard.busy,auxiliaryDirty=Object.values(extraDirty).some(Boolean),errorRegion=useRef<HTMLDivElement>(null);
+  const releaseConfirmation=useConfirmationPresence(confirm,guardedBusy,setConfirm,onConfirmationPresence),releaseDelete=useConfirmationPresence(deleteOpen,guardedBusy,setDeleteOpen,onConfirmationPresence);
   function markExtra(key:keyof typeof extraDirty,value=true){setExtraDirty(old=>({...old,[key]:value}));}
   useEnvelopeGuard({dirty:dirty||copyGuard.dirty||auxiliaryDirty,busy:guardedBusy},onGuardChange);
   useEffect(()=>{if(initialEnvelope)return;let active=true;api<EnvelopeView>(`/api/envelopes/${id}`).then(next=>{if(active){setE(next);savedEnvelope.current=next;}}).catch(err=>{if(active)setError(err);});return()=>{active=false;};},[id,initialEnvelope]);
@@ -128,8 +147,9 @@ export function EnvelopeEditor({id,workspace,initialEnvelope,creation=false,embe
     </fieldset>
     {wizard&&<div className="envelope-wizard-footer"><Button variant="outline" disabled={guardedBusy||step===0} onClick={()=>{setStep(value=>Math.max(0,value-1) as EnvelopeStep);setError(null);setPreview(false);}}>Back</Button><span>Step {step+1} of {envelopeSteps.length}</span>{step<4&&<Button disabled={guardedBusy} onClick={continueStep}>{busy?"Saving…":"Continue"}</Button>}</div>}
     <div hidden={wizard}><Card className="mt-6"><CardHeader><CardTitle>Activity · UTC</CardTitle></CardHeader><CardContent><ul className="audit-list">{e.events.map(v=><li key={v.id}><strong>{v.event.replaceAll("_"," ")}</strong><span>{v.actor}</span><time>{new Date(v.created_at).toISOString()}</time></li>)}</ul>{!e.events.length&&<p>No recorded activity yet.</p>}</CardContent></Card></div>
-    <Dialog open={deleteOpen} onOpenChange={open=>{if(!guardedBusy)setDeleteOpen(open);}}><DialogContent className="envelope-confirmation" closeDisabled={guardedBusy}><DialogHeader><DialogTitle>Delete this envelope?</DialogTitle><DialogDescription>Admin-only deletion records a reason and preserves signed originals.</DialogDescription></DialogHeader><Label htmlFor="delete-reason">Reason (minimum 3 characters)</Label><Input id="delete-reason" disabled={guardedBusy} value={deleteReason} maxLength={500} onChange={v=>{setDeleteReason(v.target.value);markExtra("delete");}}/><ErrorNotice error={error}/><DialogFooter><Button variant="outline" disabled={guardedBusy} onClick={()=>setDeleteOpen(false)}>Cancel</Button><Button variant="destructive" disabled={busy||deleteReason.trim().length<3} onClick={()=>run(async()=>{await api("/api/manage/lifecycle",{method:"POST",body:JSON.stringify({envelopeId:id,action:"delete",reason:deleteReason})});markExtra("delete",false);setDeleteOpen(false);setNotice("Restricted deletion recorded.");})}>Delete envelope</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={deleteOpen} onOpenChange={open=>{if(!guardedBusy)setDeleteOpen(open);}}><DialogContent className="envelope-confirmation" closeDisabled={guardedBusy} onCloseAutoFocus={releaseDelete}><DialogHeader><DialogTitle>Delete this envelope?</DialogTitle><DialogDescription>Admin-only deletion records a reason and preserves signed originals.</DialogDescription></DialogHeader><Label htmlFor="delete-reason">Reason (minimum 3 characters)</Label><Input id="delete-reason" disabled={guardedBusy} value={deleteReason} maxLength={500} onChange={v=>{setDeleteReason(v.target.value);markExtra("delete");}}/><ErrorNotice error={error}/><DialogFooter><Button variant="outline" disabled={guardedBusy} onClick={()=>setDeleteOpen(false)}>Cancel</Button><Button variant="destructive" disabled={busy||deleteReason.trim().length<3} onClick={()=>run(async()=>{await api("/api/manage/lifecycle",{method:"POST",body:JSON.stringify({envelopeId:id,action:"delete",reason:deleteReason})});markExtra("delete",false);setDeleteOpen(false);setNotice("Restricted deletion recorded.");})}>Delete envelope</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={confirm} onOpenChange={open=>{if(!guardedBusy)setConfirm(open);}}><DialogContent className="envelope-confirmation" closeDisabled={guardedBusy} onCloseAutoFocus={event=>{
+      if(!releaseConfirmation()){event.preventDefault();return;}
       const button = reviewButton.current;
       if (button && !button.disabled) {
         event.preventDefault();

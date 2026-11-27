@@ -8,6 +8,7 @@ import { AccordBrand,WorkspaceLoader } from "@/components/accord-brand";
 import { InitialsAvatar } from "@/components/initials-avatar";
 import { AuthFrame } from "@/components/auth-frame";
 import { Button } from "@/components/ui/button";
+import { Card,CardHeader,CardDescription,CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert,AlertTitle,AlertDescription } from "@/components/ui/alert";
 import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from "@/components/ui/select";
@@ -44,7 +45,7 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
  const settingsSection = settingsSections.find(section=>path===settingsHref(section.id));
  const companyName = workspace.company.name.replace(" (Synthetic)","");
  const roleLabel = ({admin:"Administrator",sender:"Sender","read-only":"Viewer"} as Record<string,string>)[workspace.role]??"Member";
- if(error?.status===401)return <AuthFrame><CardSetup error={error}/></AuthFrame>;
+ if(error?.status===401)return <AuthFrame><Card><CardHeader><h1 data-slot="card-title">Welcome back</h1><CardDescription>Sign in to your company workspace.</CardDescription></CardHeader><CardContent><Button asChild size="lg" className="w-full"><Link href="/login">Sign in</Link></Button></CardContent></Card></AuthFrame>;
  if(loading&&!error)return <WorkspaceLoader/>;
  const sidebar = (className = "app-sidebar") => <aside className={className}><Link href="/" className="brand-link" onClick={closeMenu}><AccordBrand/></Link>
  <div className="workspace-card"><span className="workspace-icon" aria-hidden="true"><Building2 size={18}/></span><span className="workspace-identity"><strong>{companyName}</strong></span></div>
@@ -53,7 +54,7 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
  return <div className="app-layout">{sidebar()}
  <div className="app-main"><header className="topbar"><Dialog open={mobile} onOpenChange={setMobile}>
    <DialogTrigger asChild><Button variant="ghost" size="icon" className="mobile-menu" aria-label="Toggle menu"><Menu/></Button></DialogTrigger>
-   <DialogContent className="mobile-workspace-menu top-0 left-0 flex h-dvh w-[min(280px,100vw)] max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-y-auto rounded-none border-0 p-0 sm:max-w-none">
+   <DialogContent variant="menu" className="mobile-workspace-menu top-0 left-0 flex h-dvh w-[min(280px,100vw)] max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-y-auto rounded-none border-0 p-0 sm:max-w-none">
      <DialogTitle className="sr-only">Workspace menu</DialogTitle>
      <DialogDescription className="sr-only">Navigate your Accord workspace.</DialogDescription>
      {sidebar("app-sidebar mobile-open")}
@@ -64,4 +65,4 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
 export function PageHeading({eyebrow,title,description,action}:{eyebrow?:string;title:string;description:string;action?:ReactNode}){return <div className="page-heading"><div>{eyebrow&&<p className="eyebrow">{eyebrow}</p>}<h1>{title}</h1><p>{description}</p></div>{action}</div>;}
 export function Empty({title,children}:{title:string;children:ReactNode}){return <div className="empty-state"><Files/><h3>{title}</h3><p>{children}</p></div>;}
 
-function CardSetup({error}:{error:ApiError}){return <section className="setup-state"><Database size={32}/><p className="eyebrow">{error.status===401?"SIGNED OUT":"WORKSPACE SETUP"}</p><h1>{error.status===401?"Sign in to your company":"Your workspace needs a connection"}</h1><p>{error.status===401?"Sign in to access your company’s documents and signing records.":"Private documents and signing records require the project’s PostgreSQL database. Nothing is saved until setup is complete."}</p><ErrorNotice error={error}/><div className="flex flex-wrap gap-3"><Button asChild><Link href={error.status===401?"/login":"/settings"}>{error.status===401?"Sign in":"View setup steps"}</Link></Button><Button variant="outline" onClick={()=>location.reload()}>Check again</Button></div><p className="text-sm text-muted-foreground">Contact your workspace administrator if you need access or help with setup.</p></section>;}
+function CardSetup({error}:{error:ApiError}){return <section className="setup-state"><Database size={32}/><p className="eyebrow">WORKSPACE SETUP</p><h1>Your workspace needs a connection</h1><p>Private documents and signing records require the project’s PostgreSQL database. Nothing is saved until setup is complete.</p><ErrorNotice error={error}/><div className="flex flex-wrap gap-3"><Button asChild><Link href="/settings">View setup steps</Link></Button><Button variant="outline" onClick={()=>location.reload()}>Check again</Button></div><p className="text-sm text-muted-foreground">Contact your workspace administrator if you need access or help with setup.</p></section>;}

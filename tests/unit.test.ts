@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
+import { Collapse } from "../components/ui/collapse";
 import { renderToStaticMarkup } from "react-dom/server";
 import postcss from "postcss";
 import { PDFDocument, PDFName, PDFString, degrees, PDFArray, PDFRawStream, decodePDFRawStream } from "pdf-lib";
@@ -67,10 +68,39 @@ test("branded loading yields immediately to content and usable workspace errors"
  assert.match(ready,/Private content/);assert.doesNotMatch(ready,/workspace-loading/);
  for(const loading of [true,false]){
   const signedOut=render(loading,new ApiError("Your session ended.","UNAUTHENTICATED",401));
-  assert.match(signedOut,/Your session ended\./);assert.match(signedOut,/href="\/login"/);assert.match(signedOut,/>Check again<\/button>/);
+  assert.match(signedOut,/Welcome back/);assert.match(signedOut,/href="\/login"/);assert.doesNotMatch(signedOut,/Your session ended\.|Check again/);
   const unavailable=render(loading,new ApiError("The database is unavailable.","DATABASE_UNAVAILABLE",503));
   assert.match(unavailable,/The database is unavailable\./);assert.match(unavailable,/>Check again<\/button>/);
   for(const markup of [signedOut,unavailable])assert.doesNotMatch(markup,/workspace-loading|Private content/);
+ }
+});
+
+test("signed-out workspace uses the compact login card without errors or private content",()=>{
+ const workspace:WorkspaceView={company:{id:"fictional-company",name:"Northstar Studio"},role:"admin",userId:"fictional-owner",envelopes:[],verificationOnly:true,developmentLinks:false};
+ for(const loading of [true,false])for(const message of ["Sign in to your workspace.","Your session ended."]){
+  const markup=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/envelopes"},createElement(Shell,{workspace,loading,error:new ApiError(message,"UNAUTHENTICATED",401),children:"Private agreement contents"})));
+  assert.match(markup,/<main class="login-page">/);assert.match(markup,/class="auth-content"/);
+  for(const slot of ["card","card-header","card-description","card-content"])assert.equal((markup.match(new RegExp(`data-slot="${slot}"`,"g"))??[]).length,1);
+  assert.match(markup,/<h1 data-slot="card-title">Welcome back<\/h1>/);assert.equal((markup.match(/<h1\b/g)??[]).length,1);
+  assert.match(markup,/>Sign in to your company workspace\.<\/div>/);
+  const link=markup.match(/<a\b[^>]*>Sign in<\/a>/g)??[];
+  assert.equal(link.length,1);assert.match(link[0],/href="\/login"/);assert.match(link[0],/class="[^"]*\bw-full\b/);
+  assert.match(markup,/class="brand-link auth-brand"/);assert.match(markup,/class="auth-footer"><span>Private documents\. Clear evidence\.<\/span>/);
+  assert.equal(markup.includes(message),false);
+  assert.doesNotMatch(markup,/role="alert"|data-slot="alert|<svg\b|eyebrow|SIGNED OUT|WORKSPACE SETUP|setup-state|Action needed|Check again|administrator|Sign in to access|Sign in to your company<|Private agreement contents|Northstar Studio|app-layout|<aside\b|<nav\b|<button\b/);
+ }
+});
+
+test("non401 workspace errors retain diagnostics, setup guidance and recovery",()=>{
+ for(const loading of [true,false])for(const [status,code,message] of [[503,"DATABASE_UNAVAILABLE","The database is unavailable."],[500,"INTERNAL_ERROR","The server could not load your workspace."],[403,"FORBIDDEN","Access to this workspace was denied."]] as const){
+  const markup=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/envelopes"},createElement(Shell,{loading,error:new ApiError(message,code,status),children:"Private agreement contents"})));
+  assert.match(markup,/class="app-layout"/);assert.match(markup,/class="setup-state"/);assert.match(markup,/lucide-database/);
+  assert.match(markup,/>WORKSPACE SETUP<\/p>/);assert.match(markup,/<h1>Your workspace needs a connection<\/h1>/);
+  assert.match(markup,/Private documents and signing records require the project’s PostgreSQL database\. Nothing is saved until setup is complete\./);
+  assert.match(markup,/role="alert"/);assert.match(markup,/>Action needed<\/div>/);assert.ok(markup.includes(message));
+  assert.match(markup,/<a\b[^>]*href="\/settings"[^>]*>View setup steps<\/a>/);assert.match(markup,/>Check again<\/button>/);
+  assert.match(markup,/Contact your workspace administrator if you need access or help with setup\./);
+  assert.doesNotMatch(markup,/Welcome back|login-page|href="\/login"|workspace-loading|Private agreement contents/);
  }
 });
 
@@ -667,6 +697,27 @@ test("visibility filter separates active, archived and deleted envelopes (list a
 
 const drawerEnvelope:EnvelopeView={id:"fixture-envelope",owner_id:"fixture-owner",title:"Fixture agreement",state:"draft",version:1,routing:"parallel",folder:"",tags:[],created_at:"2026-11-27T00:00:00Z",documents:[{id:"fixture-document",name:"Fixture.pdf",sha256:"fictional-digest",size:100,geometry:[{x:0,y:0,width:612,height:792,rotation:0}]}],recipients:[{id:"fixture-recipient",name:"Avery Morgan",email:"avery@client.test",routing_order:1,status:"pending"}],fields:[],events:[],outputs:[],deliveries:[]};
 const drawerWorkspace:WorkspaceView={company:{id:"fixture-company",name:"Northstar Studio"},role:"sender",userId:"fixture-owner",envelopes:[],verificationOnly:true,developmentLinks:false};
+
+test("collapse retains controls and values but hides closed content from keyboard and accessibility",()=>{
+ for(const open of [false,true]){
+  const markup=renderToStaticMarkup(createElement(Collapse,{open,id:"fixture-filters"},createElement("input",{defaultValue:"Avery",name:"recipient"})));
+  assert.match(markup,/value="Avery"/);assert.match(markup,/id="fixture-filters"/);
+  assert.equal(markup.includes('inert=""'),!open);
+  assert.equal(markup.includes('aria-hidden="true"'),!open);
+  assert.equal(markup.includes('data-state="open"'),open);
+ }
+});
+
+test("motion uses shared eased durations and reduced motion removes animations and delays entirely",()=>{
+ const globals=postcss.parse(readFileSync(new URL("../app/globals.css",import.meta.url),"utf8"));
+ const motion=postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8"));
+ const values=new Map<string,string>();motion.walkRules(":root",rule=>rule.walkDecls(decl=>{values.set(decl.prop,decl.value);}));
+ assert.ok(parseInt(values.get("--motion-popup")!)>=180&&parseInt(values.get("--motion-popup")!)<=220);
+ assert.ok(parseInt(values.get("--motion-panel")!)>=260&&parseInt(values.get("--motion-panel")!)<=320);
+ assert.match(values.get("--motion-ease")!,/^cubic-bezier\(/);
+ const reduced=new Map<string,string>();globals.walkAtRules("media",media=>{if(media.params.includes("prefers-reduced-motion: reduce"))media.walkDecls(decl=>{reduced.set(decl.prop,decl.value);assert.equal(decl.important,true);});});
+ assert.equal(reduced.get("animation"),"none");assert.equal(reduced.get("transition"),"none");assert.equal(reduced.get("scroll-behavior"),"auto");
+});
 
 test("wizard steps require a title, documents, recipients and complete signing assignments in order",()=>{
  assert.equal(envelopeStepError({...drawerEnvelope,title:" "},0),"Enter an envelope title.");
