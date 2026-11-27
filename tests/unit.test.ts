@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
+import { Children,createElement,isValidElement } from "react";
 import { Collapse } from "../components/ui/collapse";
+import { DialogContent,DialogPortal } from "../components/ui/dialog";
+import { AlertDialogContent,AlertDialogPortal } from "../components/ui/alert-dialog";
 import { renderToStaticMarkup } from "react-dom/server";
 import postcss from "postcss";
 import { PDFDocument, PDFName, PDFString, degrees, PDFArray, PDFRawStream, decodePDFRawStream } from "pdf-lib";
@@ -274,6 +276,29 @@ test("signed-in controls use muted borders, enabled hover and clear focus while 
  assert.equal(declarations[0].get("box-shadow"),"none");
  assert.equal(declarations[2].get("outline"),"2px solid var(--ring)");assert.equal(declarations[2].get("outline-offset"),"2px");
  for(const values of declarations)for(const property of ["color","opacity","pointer-events","cursor"])assert.equal(values.has(property),false);
+});
+
+test("portalled drawers and confirmations own the card background token outside the workspace shell",()=>{
+ const surfaces=[...(["dialog","drawer","menu"] as const).map(variant=>DialogContent({variant})),DialogContent({className:"envelope-confirmation"}),AlertDialogContent({})];
+ for(const surface of surfaces){
+  assert.ok(surface.type===DialogPortal||surface.type===AlertDialogPortal);
+  const content=Children.toArray(surface.props.children).find(child=>isValidElement<{"data-slot"?:string}>(child)&&["dialog-content","alert-dialog-content"].includes(child.props["data-slot"]??""));
+  assert.ok(isValidElement<{className:string}>(content));
+  assert.ok(content.props.className.split(" ").includes("[--background:var(--card)]"));
+  assert.ok(content.props.className.split(" ").includes("bg-background"));
+ }
+ const globals=postcss.parse(readFileSync(new URL("../app/globals.css",import.meta.url),"utf8")),cards=new Map<string,string>();
+ for(const selector of [":root",".dark"])globals.walkRules(selector,rule=>rule.walkDecls("--card",decl=>{cards.set(selector,decl.value);}));
+ assert.equal(cards.get(":root"),"#ffffff");assert.ok(cards.get(".dark"));assert.notEqual(cards.get(".dark"),cards.get(":root"));
+});
+
+test("signed-in empty previews and PDF surrounds match the card surface while the wizard footer inherits it",()=>{
+ const css=postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")),surfaces=new Map<string,string>();
+ css.walkRules(rule=>{if(rule.parent?.type!=="root")return;rule.walkDecls("background",decl=>{for(const selector of rule.selectors)surfaces.set(selector,decl.value);});});
+ for(const selector of [".app-layout :is(.preview-empty,.pdf-frame)",".envelope-drawer :is(.preview-empty,.pdf-frame)"])assert.equal(surfaces.get(selector),"var(--card)");
+ assert.equal(surfaces.get(".envelope-wizard-footer"),"var(--background)");
+ assert.equal(surfaces.get(".recipient-pill"),"var(--muted)");
+ assert.equal(surfaces.get(".login-page"),"var(--auth-background)");assert.equal(surfaces.get(".workspace-loading"),"#f3f3f2");
 });
 
 test("workspace identity is a static muted card with only its name and a rounded-square building icon",()=>{
