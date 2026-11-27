@@ -9,6 +9,7 @@ import { AlertDialogContent,AlertDialogPortal } from "../components/ui/alert-dia
 import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import postcss from "postcss";
+import { XMLParser } from "fast-xml-parser";
 import { PDFDocument, PDFName, PDFString, degrees, PDFArray, PDFRawStream, decodePDFRawStream } from "pdf-lib";
 import { fieldInput, recipientInput, draftInput, fieldInside, validateValues, valuesInput, type Field } from "../lib/model";
 import { DRAW_PREFIX, parseDrawing } from "../lib/drawing";
@@ -46,6 +47,17 @@ import type { EnvelopeView,RecipientView,WorkspaceView } from "../lib/ui-types";
 
 const router={bfcacheId:"fixture",back(){},forward(){},refresh(){},hmrRefresh(){},push(){},replace(){},prefetch(){}};
 const renderToStaticMarkup=(node:Parameters<typeof renderMarkup>[0])=>renderMarkup(createElement(AppRouterContext.Provider,{value:router},node));
+type MarkupNode={ [name:string]:string|MarkupNode[] };
+function markupText(markup:string){
+ const nodes:MarkupNode[]=new XMLParser({preserveOrder:true,ignoreAttributes:true,processEntities:false,trimValues:false,parseTagValue:false}).parse(markup);
+ const text=(children:MarkupNode[]):string=>children.map(node=>Object.entries(node).map(([name,value])=>name==="#text"?String(value):Array.isArray(value)?text(value):"").join("")).join("");
+ return text(nodes);
+}
+
+test("markup text inspection follows nested nodes without treating attribute values as text",()=>{
+ assert.equal(markupText('<div title="not > visible">Before <span>Northstar <strong>Studio</strong></span> after<img alt="not text"/></div>'),"Before Northstar Studio after");
+ assert.equal(markupText('<span>&lt;script&gt;fictional&lt;/script&gt;</span>'),"&lt;script&gt;fictional&lt;/script&gt;");
+});
 
 test("branded loading shows only the existing star and a screen-reader status",()=>{
  const markup=renderToStaticMarkup(createElement(WorkspaceLoader));
@@ -54,7 +66,7 @@ test("branded loading shows only the existing star and a screen-reader status",(
  assert.ok(decodeURIComponent(markup).includes("/accord.png"));
  assert.match(markup,/<img[^>]*alt=""[^>]*aria-hidden="true"[^>]*width="846"[^>]*height="938"/);
  assert.match(markup,/<span class="sr-only">Loading your workspace<\/span>/);
- assert.equal(markup.replace(/<[^>]*>/g,""),"Loading your workspace");
+ assert.equal(markupText(markup),"Loading your workspace");
  assert.doesNotMatch(markup,/<a\b|<aside\b|<footer\b|<nav\b|data-slot="card|skeleton|accord-brand/);
 });
 
@@ -326,7 +338,7 @@ test("workspace identity is a static muted card with only its name and a rounded
   const workspace:WorkspaceView={company:{id:"northstar",name:"Northstar Studio"},role,userId:"fixture-user",envelopes:[],verificationOnly:false,developmentLinks:false};
   const markup=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/"},createElement(Shell,{workspace,demo,children:"Workspace content"})));
   const card=markup.match(/<div class="workspace-card"[^>]*>.*?<\/div>/)?.[0];
-  assert.ok(card);assert.equal(card.replace(/<[^>]*>/g,""),"Northstar Studio");
+  assert.ok(card);assert.equal(markupText(card),"Northstar Studio");
   assert.match(card,/<span class="workspace-icon" aria-hidden="true"><svg[^>]*class="[^"]*lucide-building-2[^"]*"/);
   assert.doesNotMatch(card,/<a\b|<button\b|<small\b|\b(?:role|tabindex|href|aria-haspopup|aria-expanded|disabled)=|avatar|chevron/);
   assert.doesNotMatch(markup,/aria-haspopup="menu"|workspace-switch|workspace-chevron|workspace-menu for/i);
