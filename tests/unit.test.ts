@@ -17,7 +17,7 @@ import { originTrusted, trustedOrigins } from "../server/origins";
 import { matchesFilters } from "../lib/filters";
 import { AVATAR_PALETTE,avatarColor,avatarInitials } from "../lib/avatar";
 import { InitialsAvatar } from "../components/initials-avatar";
-import { DocumentCover,EnvelopeRecipients } from "../components/dashboard";
+import { DocumentCover,EnvelopeRecipients,statusFilterOptions } from "../components/dashboard";
 import { RecipientPill,RecipientOverflowList } from "../components/envelope-recipients";
 import { recipientDisplay,packRecipientRows } from "../lib/recipient-layout";
 import { TooltipProvider } from "../components/ui/tooltip";
@@ -502,6 +502,18 @@ test("loopback origin aliases are trusted only outside production; foreign origi
  assert.equal(originTrusted(null,"http://localhost:3000","development"),false);
  assert.deepEqual(trustedOrigins("https://esign.example.com","development"),["https://esign.example.com"]);
 });
+test("status filter options use sentence-case labels and preserve list and CSV filter values",()=>{
+ assert.deepEqual(statusFilterOptions,[
+  {value:"all",label:"All statuses"},{value:"draft",label:"Draft"},{value:"sent",label:"Sent"},
+  {value:"viewed",label:"Viewed"},{value:"part-signed",label:"Part signed"},{value:"completed",label:"Completed"},
+  {value:"declined",label:"Declined"},{value:"voided",label:"Voided"},{value:"expired",label:"Expired"},
+ ]);
+ for(const {value:state} of statusFilterOptions.slice(1)){
+  const e={title:"Supplier NDA",owner_name:"Sam",state,folder:"",tags:[],created_at:"2026-11-10T09:00:00Z"};
+  for(const {value:status} of statusFilterOptions)assert.equal(matchesFilters(e,{status}),status==="all"||status===state);
+ }
+});
+
 test("status export filters treat 'all' as unset and match recipients like the dashboard",()=>{
  const e={title:"Supplier NDA",owner_name:"Sam",state:"sent",folder:"",tags:[],created_at:"2026-11-10T09:00:00Z",recipients:[{name:"Avery Morgan",email:"avery@client.test"}]};
  assert.equal(matchesFilters(e,{recipient:"all",status:"all",folder:"all",tag:"all",search:""}),true);
