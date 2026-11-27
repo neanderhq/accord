@@ -1,2 +1,2 @@
-import { SettingsWorkspace } from "@/components/settings";
-export default function Page(){return <SettingsWorkspace/>;}
+import { redirect } from "next/navigation";
+export default function Page(){redirect("/settings/contacts");}

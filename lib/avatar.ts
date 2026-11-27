@@ -20,10 +20,14 @@ export function avatarInitials(name?:string|null,fallback="?") {
  return words.length>1?first+graphemes(words[words.length-1].toUpperCase())[0]:first;
 }
 
-export function avatarColor(id?:string|null,name?:string|null,fallback="?") {
- const seed=(normalize(id)||normalize(name)||normalize(fallback)||"?").toLowerCase();
+export function identityHash(value:string) {
+ const seed=normalize(value).toLowerCase();
  // Fixed integer hashing keeps identity colors identical in every render environment.
  let hash=2166136261;
  for(const character of seed)hash=Math.imul(hash^character.codePointAt(0)!,16777619);
- return AVATAR_PALETTE[(hash>>>0)%AVATAR_PALETTE.length];
+ return hash>>>0;
+}
+
+export function avatarColor(id?:string|null,name?:string|null,fallback="?") {
+ return AVATAR_PALETTE[identityHash(normalize(id)||normalize(name)||normalize(fallback)||"?")%AVATAR_PALETTE.length];
 }

@@ -17,6 +17,72 @@ import { originTrusted, trustedOrigins } from "../server/origins";
 import { matchesFilters } from "../lib/filters";
 import { AVATAR_PALETTE,avatarColor,avatarInitials } from "../lib/avatar";
 import { InitialsAvatar } from "../components/initials-avatar";
+import { DocumentCover,EnvelopeRecipients } from "../components/dashboard";
+import { Shell,ApiError } from "../components/app-kit";
+import { WorkspaceLoader } from "../components/accord-brand";
+import RouteLoading from "../app/loading";
+import { Composer } from "../components/composer";
+import { SettingsWorkspace,SettingsPage,SettingsNavigation,SettingsDeliveryLog,loadSettingsSection } from "../components/settings";
+import { settingsSections,settingsHref,canAccessSettingsSection,brandingSettingsPayload,webhookSettingsPayload,type SettingsSectionId } from "../app/settings/sections";
+import SettingsIndex from "../app/settings/page";
+import ContactsSettingsPage from "../app/settings/contacts/page";
+import BrandingSettingsPage from "../app/settings/branding/page";
+import EmailJobsSettingsPage from "../app/settings/email-jobs/page";
+import DeliveryLogSettingsPage from "../app/settings/delivery-log/page";
+import WebhookSettingsPage from "../app/settings/webhook/page";
+import TemplatesSettingsPage from "../app/settings/templates/page";
+import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
+import type { RecipientView,WorkspaceView } from "../lib/ui-types";
+
+test("branded loading shows only the existing star and a screen-reader status",()=>{
+ const markup=renderToStaticMarkup(createElement(WorkspaceLoader));
+ assert.match(markup,/<div class="workspace-loading" role="status">/);
+ assert.equal((markup.match(/<img\b/g)??[]).length,1);
+ assert.ok(decodeURIComponent(markup).includes("/accord.png"));
+ assert.match(markup,/<img[^>]*alt=""[^>]*aria-hidden="true"[^>]*width="846"[^>]*height="938"/);
+ assert.match(markup,/<span class="sr-only">Loading your workspace<\/span>/);
+ assert.equal(markup.replace(/<[^>]*>/g,""),"Loading your workspace");
+ assert.doesNotMatch(markup,/<a\b|<aside\b|<footer\b|<nav\b|data-slot="card|skeleton|accord-brand/);
+});
+
+test("branded loading is shared by route, workspace, Settings and editor waits",()=>{
+ const loader=renderToStaticMarkup(createElement(WorkspaceLoader));
+ const render=(children:ReturnType<typeof createElement>)=>renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/settings/contacts"},children));
+ assert.equal(renderToStaticMarkup(createElement(RouteLoading)),loader);
+ assert.equal(render(createElement(Shell,{loading:true,children:"Private content"})),loader);
+ assert.equal(render(createElement(SettingsWorkspace,{section:"contacts"})),loader);
+ assert.equal(render(createElement(Composer,{id:"fictional-envelope"})),loader);
+ const section=renderToStaticMarkup(createElement(SettingsPage,{section:"contacts",workspace:{company:{id:"northstar",name:"Northstar Studio"},role:"admin",userId:"fixture-user",envelopes:[],verificationOnly:true,developmentLinks:false}}));
+ // React hoists the image preload hint ahead of the surrounding Settings layout.
+ assert.ok(section.includes(loader.slice(loader.indexOf('<div class="workspace-loading"'))));assert.doesNotMatch(section,/Loading contacts/);
+});
+
+test("branded loading yields immediately to content and usable workspace errors",()=>{
+ const render=(loading:boolean,error?:ApiError)=>renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/"},createElement(Shell,{loading,error,children:"Private content"})));
+ const ready=render(false);
+ assert.match(ready,/Private content/);assert.doesNotMatch(ready,/workspace-loading/);
+ for(const loading of [true,false]){
+  const signedOut=render(loading,new ApiError("Your session ended.","UNAUTHENTICATED",401));
+  assert.match(signedOut,/Your session ended\./);assert.match(signedOut,/href="\/login"/);assert.match(signedOut,/>Check again<\/button>/);
+  const unavailable=render(loading,new ApiError("The database is unavailable.","DATABASE_UNAVAILABLE",503));
+  assert.match(unavailable,/The database is unavailable\./);assert.match(unavailable,/>Check again<\/button>/);
+  for(const markup of [signedOut,unavailable])assert.doesNotMatch(markup,/workspace-loading|Private content/);
+ }
+});
+
+test("branded loading fills the viewport and stops spinning with reduced motion",()=>{
+ const css=postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8"));
+ const declarations=(selector:string)=>{const values=new Map<string,string>();css.walkRules(selector,rule=>{if(rule.parent?.type==="root")rule.walkDecls(declaration=>{values.set(declaration.prop,declaration.value);});});return values;};
+ const screen=declarations(".workspace-loading"),mark=declarations(".workspace-loading-mark");
+ assert.equal(screen.get("display"),"grid");assert.equal(screen.get("place-items"),"center");
+ assert.equal(screen.get("width"),"100%");assert.equal(screen.get("min-height"),"100dvh");
+ assert.equal(screen.get("background"),"#f3f3f2");assert.equal(screen.has("background-image"),false);
+ assert.equal(mark.get("height"),"auto");assert.equal(mark.get("object-fit"),"contain");
+ assert.match(mark.get("animation")??"",/^workspace-loading-spin [2-9]s linear infinite$/);
+ let reducedMotionStopsSpin=false;
+ css.walkAtRules("media",media=>{if(media.params.replaceAll(/\s/g,"")!=="(prefers-reduced-motion:reduce)")return;media.walkRules(".workspace-loading-mark",rule=>{rule.walkDecls("animation",declaration=>{if(declaration.value==="none")reducedMotionStopsSpin=true;});});});
+ assert.equal(reducedMotionStopsSpin,true);
+});
 
 test("avatar initials use first and last graphemes with safe empty-name fallbacks",()=>{
  const cases=[
@@ -68,6 +134,170 @@ test("avatar component renders decorative identity colors with the circular 36px
  postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(".avatar",rule=>{rule.walkDecls(declaration=>{declarations.set(declaration.prop,declaration.value);});});
  assert.equal(declarations.get("width"),"36px");assert.equal(declarations.get("height"),"36px");
  assert.equal(declarations.get("border-radius"),"50%");assert.equal(declarations.get("border"),"0");assert.equal(declarations.get("box-shadow"),"none");
+});
+
+test("document covers remain stable across renders and ordering, with varied decorative illustrations",()=>{
+ const ids=Array.from({length:24},(_,index)=>`envelope-${index}`);
+ const render=(id:string)=>renderToStaticMarkup(createElement(DocumentCover,{id}));
+ const originals=new Map(ids.map(id=>[id,render(id)]));
+ for(const id of ids.toReversed())assert.equal(render(id),originals.get(id));
+ assert.ok(new Set(originals.values()).size>=6,"Different envelopes should have varied covers");
+ for(const markup of originals.values()){
+  assert.match(markup,/aria-hidden="true"/);assert.match(markup,/focusable="false"/);
+  assert.match(markup,/<svg[^>]*width="48"[^>]*height="52"/);
+  assert.doesNotMatch(markup,/<image|<img|href=|url\(/);
+ }
+});
+
+test("recipient avatars use email identity across envelopes and names when no email is available",()=>{
+ const recipient:RecipientView={id:"recipient-first-envelope",name:"Avery Morgan",email:"avery@client.test",routing_order:1,status:"pending"};
+ const render=(value:RecipientView)=>renderToStaticMarkup(createElement(EnvelopeRecipients,{recipients:[value]}));
+ const colors=(markup:string)=>markup.match(/class="avatar avatar-small"[^>]*style="([^"]+)"/)?.[1];
+ const original=render(recipient);
+ assert.ok(colors(original));assert.match(original,/>AM<\/span>/);
+ assert.ok(original.includes(recipient.name));assert.ok(original.includes(recipient.email));
+ assert.equal(colors(render({...recipient,id:"recipient-other-envelope",name:"Avery Renamed",email:" AVERY@client.test "})),colors(original));
+ assert.equal(colors(render({...recipient,email:"",name:" Avery  Morgan "})),colors(render({...recipient,id:"different-id",email:" ",name:"avery morgan"})));
+ assert.match(render({...recipient,email:"",name:""}),/>\?<\/span>/);
+});
+
+test("recipient list preserves the first two names and emails, reports additional people and handles empty lists",()=>{
+ const recipients:RecipientView[]=Array.from({length:5},(_,index)=>({id:`recipient-${index}`,name:`Person ${index}`,email:`person${index}@client.test`,routing_order:index+1,status:"pending"}));
+ const markup=renderToStaticMarkup(createElement(EnvelopeRecipients,{recipients}));
+ for(const r of recipients.slice(0,2)){assert.ok(markup.includes(r.name));assert.ok(markup.includes(r.email));}
+ assert.equal((markup.match(/class="avatar avatar-small"/g)??[]).length,2);
+ assert.match(markup,/\+3 more/);assert.ok(!markup.includes(recipients[2].email));
+ const empty=renderToStaticMarkup(createElement(EnvelopeRecipients,{recipients:[]}));
+ assert.match(empty,/Not added/);assert.doesNotMatch(empty,/class="avatar/);
+});
+
+test("signed-in shell offers a real workspace menu, readable roles and one conditional email setup notice",()=>{
+ const workspace:WorkspaceView={company:{id:"northstar",name:"Northstar Studio"},role:"admin",userId:"administrator",envelopes:[],verificationOnly:true,developmentLinks:false};
+ const render=(value:WorkspaceView)=>renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/settings"},createElement(Shell,{workspace:value,children:"Workspace content"})));
+ const markup=render(workspace);
+ assert.match(markup,/<button[^>]*aria-label="Workspace menu for Northstar Studio"[^>]*aria-haspopup="menu"/);
+ assert.match(markup,/Administrator workspace/);assert.match(markup,/aria-label="Sign out"/);
+ assert.match(markup,/aria-current="page"[^>]*class="settings-link active"/);
+ assert.equal((markup.match(/class="email-setup-note"/g)??[]).length,1);
+ assert.match(markup,/Email delivery is off/);assert.match(markup,/test or email-disabled mode/);assert.match(markup,/href="\/settings\/email-jobs"[^>]*>Setup Guide/);
+ assert.doesNotMatch(markup,/Verification mode|Verification workspace|Synthetic records|Live workspace|Email live|workspace-footnote/);
+ const enabled=render({...workspace,verificationOnly:false});
+ assert.doesNotMatch(enabled,/email-setup-note|Email delivery is off|Email live|delivered by email/);
+ for(const [role,label] of [["sender","Sender"],["read-only","Viewer"]])assert.ok(render({...workspace,role}).includes(`${label} workspace`));
+});
+
+test("all six Settings routes select their own page and the index redirects to Contacts",()=>{
+ const pages={contacts:ContactsSettingsPage,branding:BrandingSettingsPage,"email-jobs":EmailJobsSettingsPage,"delivery-log":DeliveryLogSettingsPage,webhook:WebhookSettingsPage,templates:TemplatesSettingsPage};
+ assert.deepEqual(settingsSections.map(section=>section.id),Object.keys(pages));
+ for(const section of settingsSections){
+  assert.equal(pages[section.id]().props.section,section.id);
+  assert.equal(settingsHref(section.id),`/settings/${section.id}`);
+ }
+ assert.throws(()=>SettingsIndex(),error=>error instanceof Error&&"digest" in error&&error.digest==="NEXT_REDIRECT;replace;/settings/contacts;307;");
+});
+
+test("Settings navigation shows only permitted destinations with one visible current page",()=>{
+ for(const role of ["admin","sender","read-only"]){
+  const allowed=settingsSections.filter(section=>canAccessSettingsSection(section.id,role));
+  assert.deepEqual(allowed.map(section=>section.id),role==="admin"?settingsSections.map(section=>section.id):["contacts","templates"]);
+  for(const selected of allowed){
+   const markup=renderToStaticMarkup(createElement(SettingsNavigation,{section:selected.id,role}));
+   const links=markup.match(/<a\b[^>]*>.*?<\/a>/g)??[];
+   assert.equal(links.length,allowed.length);
+   const active=links.filter(link=>link.includes('aria-current="page"'));
+   assert.equal(active.length,1);assert.ok(active[0].includes(`href="${settingsHref(selected.id)}"`));
+   for(const section of settingsSections)assert.equal(markup.includes(`href="${settingsHref(section.id)}"`),canAccessSettingsSection(section.id,role));
+  }
+ }
+ assert.equal(renderToStaticMarkup(createElement(SettingsNavigation,{section:"contacts",role:""})).includes("<a"),false);
+});
+
+test("Settings renders one selected section and denies admin deep links before mounting a section",()=>{
+ for(const role of ["admin","sender","read-only"]){
+  const workspace:WorkspaceView={company:{id:"northstar",name:"Northstar Studio"},role,userId:"fixture-user",envelopes:[],verificationOnly:true,developmentLinks:false};
+  for(const section of settingsSections){
+   const markup=renderToStaticMarkup(createElement(SettingsPage,{section:section.id,workspace}));
+   assert.equal((markup.match(/<h1>/g)??[]).length,1);
+   const mounted=Array.from(markup.matchAll(/data-settings-section="([^"]+)"/g),match=>match[1]);
+   if(canAccessSettingsSection(section.id,role)){
+    assert.deepEqual(mounted,[section.id]);assert.doesNotMatch(markup,/role="alert"/);
+   }else{
+    assert.deepEqual(mounted,[]);assert.match(markup,/role="alert"/);assert.match(markup,/don’t have access/);
+    assert.doesNotMatch(markup,/Loading|webhook-secret|brand-name|Download recovery export|Bulk send from a template/);
+   }
+   const shell=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:settingsHref(section.id)},createElement(Shell,{workspace,children:"Settings content"})));
+   assert.match(shell,/aria-current="page"[^>]*class="settings-link active"/);
+   assert.ok(shell.includes(`<strong>${section.title.replaceAll("&","&amp;")}</strong>`));
+   assert.ok(!shell.includes(`<strong>settings/${section.id}</strong>`));
+   if(role!=="admin")assert.doesNotMatch(shell,/Setup Guide/);
+  }
+ }
+});
+
+test("Settings loads only the selected page's data and makes no admin requests for other roles",async()=>{
+ const endpoints:Record<SettingsSectionId,string[]>={contacts:["/api/manage/contacts"],branding:["/api/manage/settings"],"email-jobs":["/api/manage/settings","/api/manage/deliveries"],"delivery-log":["/api/manage/deliveries"],webhook:["/api/manage/settings"],templates:["/api/manage/templates","/api/manage/colleagues"]};
+ for(const role of ["admin","sender","read-only"]){
+  for(const section of settingsSections){
+   const requests:string[]=[];
+   const request=async<T>(path:string)=>{requests.push(path);return [] as T;};
+   if(canAccessSettingsSection(section.id,role)){
+    await loadSettingsSection(section.id,role,request);
+    assert.deepEqual(requests,endpoints[section.id]);
+   }else{
+    await assert.rejects(loadSettingsSection(section.id,role,request),/Only company administrators/);
+    assert.deepEqual(requests,[]);
+   }
+  }
+ }
+});
+
+test("delivery tables show independent accessible empty rows only when their own delivery list is empty",()=>{
+ const mail={id:"mail-fixture",envelope_id:null,kind:"signing_invitation",status:"failed",attempts:1,last_error:"Fictional mail failure",created_at:"2026-11-27T00:00:00Z"};
+ const webhook={id:"webhook-fixture",envelope_id:"envelope-fixture",event:"envelope.completed",status:"failed",attempts:1,last_error:"Fictional webhook failure",created_at:"2026-11-27T00:00:00Z"};
+ for(const hasMail of [false,true])for(const hasWebhooks of [false,true]){
+  const log={mail:hasMail?[mail]:[],webhooks:hasWebhooks?[webhook]:[],mailAttempts:[],webhookAttempts:[],runs:[]};
+  const markup=renderToStaticMarkup(createElement(SettingsDeliveryLog,{log,role:"admin",busy:false,onRetry:()=>{}}));
+  const tables=markup.match(/<table\b[^>]*>[\s\S]*?<\/table>/g)??[];
+  assert.equal(tables.length,2);
+  for(const [index,populated,message,detail] of [[0,hasMail,"No mail deliveries yet.",mail.last_error],[1,hasWebhooks,"No webhook deliveries yet.",webhook.last_error]] as const){
+   const table:string=tables[index];
+   const body=table.match(/<tbody\b[^>]*>([\s\S]*?)<\/tbody>/)?.[1];
+   assert.ok(body);assert.equal((table.match(/<th\b/g)??[]).length,5);
+   assert.equal((body.match(/<tr\b/g)??[]).length,1);
+   assert.equal(body.includes(message),!populated);
+   if(populated){
+    assert.equal((body.match(/<td\b/g)??[]).length,5);assert.ok(body.includes(detail));
+    assert.match(body,/>Retry<\/button>/);assert.doesNotMatch(body,/colspan=/i);
+   }else{
+    assert.match(body,/^<tr\b[^>]*><td\b[^>]*\bcolspan="5"[^>]*>No (mail|webhook) deliveries yet\.<\/td><\/tr>$/i);
+    assert.doesNotMatch(body,/<button\b/);
+   }
+  }
+ }
+ const loading=renderToStaticMarkup(createElement(SettingsDeliveryLog,{log:undefined,role:"admin",busy:false,onRetry:()=>{}}));
+ assert.doesNotMatch(loading,/No (mail|webhook) deliveries yet\./);
+});
+
+test("Branding saves preserve the saved webhook URL and omit its unchanged secret",()=>{
+ const current={brand_name:"Northstar Studio",brand_color:"#9b5272",logo:"data:image/png;base64,fictional-logo",retention_days:730,webhook_url:"https://events.example.com/accord"};
+ const edits={brandName:"Northstar Legal",brandColor:"#345678",logo:current.logo,retentionDays:180};
+ const payload=JSON.parse(JSON.stringify(brandingSettingsPayload(current,edits)));
+ assert.deepEqual(payload,{...edits,webhookUrl:current.webhook_url});
+ assert.equal("webhookSecret" in payload,false);
+ assert.equal(brandingSettingsPayload({...current,webhook_url:null},edits).webhookUrl,null);
+ assert.equal(current.brand_name,"Northstar Studio");assert.equal(current.retention_days,730);
+});
+
+test("Webhook saves preserve brand, logo and retention and change the secret only when supplied",()=>{
+ const current={brand_name:"Northstar Studio",brand_color:"#9b5272",logo:"data:image/png;base64,fictional-logo",retention_days:730,webhook_url:"https://events.example.com/accord"};
+ const expected={brandName:current.brand_name,brandColor:current.brand_color,logo:current.logo,retentionDays:current.retention_days,webhookUrl:"https://hooks.example.com/updated"};
+ const unchanged=JSON.parse(JSON.stringify(webhookSettingsPayload(current,{url:expected.webhookUrl,secret:""})));
+ assert.deepEqual(unchanged,expected);assert.equal("webhookSecret" in unchanged,false);
+ const secret="fictional-unit-secret-with-at-least-32-characters";
+ assert.deepEqual(webhookSettingsPayload(current,{url:expected.webhookUrl,secret}),{...expected,webhookSecret:secret});
+ assert.deepEqual(webhookSettingsPayload(current,{url:"",secret:""}),{...expected,webhookUrl:null});
+ assert.equal(webhookSettingsPayload({...current,logo:null},{url:expected.webhookUrl,secret:""}).logo,null);
+ assert.equal(current.webhook_url,"https://events.example.com/accord");
 });
 
 test("sign-in distinguishes incorrect credentials from service errors without exposing details",()=>{

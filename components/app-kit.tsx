@@ -2,16 +2,17 @@
 import { useEffect,useState,type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard,Files,Users,Settings,ArrowUpRight,ShieldCheck,Database,LogOut,Menu,TriangleAlert } from "lucide-react";
-import { AccordBrand } from "@/components/accord-brand";
+import { settingsSections,settingsHref } from "@/app/settings/sections";
+import { LayoutDashboard,Files,Users,Settings,ArrowUpRight,Mail,ChevronDown,Database,LogOut,Menu,TriangleAlert } from "lucide-react";
+import { AccordBrand,WorkspaceLoader } from "@/components/accord-brand";
 import { InitialsAvatar } from "@/components/initials-avatar";
 import { AuthFrame } from "@/components/auth-frame";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert,AlertTitle,AlertDescription } from "@/components/ui/alert";
 import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu,DropdownMenuTrigger,DropdownMenuContent,DropdownMenuItem } from "@/components/ui/dropdown-menu";
 const emptyWorkspace: WorkspaceView = {company:{id:"",name:"Team workspace"},role:"",userId:"",envelopes:[],verificationOnly:true,developmentLinks:false};
 import type { WorkspaceView } from "@/lib/ui-types";
 export class ApiError extends Error {constructor(message:string,public code:string,public status:number){super(message);}}
@@ -30,13 +31,16 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
    return () => desktop.removeEventListener("change", closeOnDesktop);
  }, []);
  const closeMenu = () => setMobile(false);
- const settingsActive = path==="/settings";
+ const settingsActive = path==="/settings"||path.startsWith("/settings/");
+ const settingsSection = settingsSections.find(section=>path===settingsHref(section.id));
  const companyName = workspace.company.name.replace(" (Synthetic)","");
- if(loading||error?.status===401)return <AuthFrame>{loading?<div className="auth-loading space-y-3" aria-live="polite"><Skeleton className="h-10 w-full"/><Skeleton className="h-40 w-full"/><p>Loading your workspace…</p></div>:<CardSetup error={error!}/>}</AuthFrame>;
+ const roleLabel = ({admin:"Administrator",sender:"Sender","read-only":"Viewer"} as Record<string,string>)[workspace.role]??"Member";
+ if(error?.status===401)return <AuthFrame><CardSetup error={error}/></AuthFrame>;
+ if(loading&&!error)return <WorkspaceLoader/>;
  const sidebar = (className = "app-sidebar") => <aside className={className}><Link href="/" className="brand-link" onClick={closeMenu}><AccordBrand/></Link>
- <div className="workspace-switch"><InitialsAvatar id={workspace.company.id} name={companyName} fallback="A"/><div><strong>{companyName}</strong><small>{demo?"Synthetic workspace":workspace.role+" workspace"}</small></div></div>
+ <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" className="workspace-switch" aria-label={`Workspace menu for ${companyName}`}><InitialsAvatar id={workspace.company.id} name={companyName} fallback="A"/><span className="workspace-identity"><strong>{companyName}</strong><small>{demo?"Demo workspace":roleLabel+" workspace"}</small></span><ChevronDown className="workspace-chevron" aria-hidden="true"/></Button></DropdownMenuTrigger><DropdownMenuContent align="start" sideOffset={6} className="workspace-menu"><DropdownMenuItem asChild><Link href="/settings" onClick={closeMenu}><Settings aria-hidden="true"/>Workspace settings</Link></DropdownMenuItem><DropdownMenuItem asChild><Link href="/team" onClick={closeMenu}><Users aria-hidden="true"/>Team</Link></DropdownMenuItem></DropdownMenuContent></DropdownMenu>
  <p className="nav-caption">Workspace</p><nav aria-label="Main navigation">{nav.map(n=>{const active=path===n.href||(n.href==="/envelopes"&&path.startsWith("/envelopes/"));return <Link key={n.href} onClick={closeMenu} href={n.href} aria-current={active?"page":undefined} className={active?"active":""}><n.icon size={18}/>{n.label}{n.label==="Envelopes"&&<span className="nav-count">{workspace.envelopes.length}</span>}</Link>;})}</nav>
- <div className="sidebar-bottom"><p className="nav-caption">Manage</p><Link href="/settings" aria-current={settingsActive?"page":undefined} className={`settings-link${settingsActive?" active":""}`} onClick={closeMenu}><Settings size={18}/>Settings & integrations</Link><div className="trust-note"><ShieldCheck size={16}/><div>{workspace.verificationOnly?<><strong>Verification workspace</strong><p>Synthetic records · Email off</p></>:<><strong>Live workspace</strong><p>Signing links delivered by email</p></>}<Link href="/settings" onClick={closeMenu}>View setup status <ArrowUpRight size={12}/></Link></div></div><div className="user-block"><InitialsAvatar id={workspace.userId} fallback={demo?"SY":"ME"}/><div><strong>{demo?"Synthetic preview":"Your workspace"}</strong><small>{demo?"Display only":workspace.role}</small></div>{!demo&&<Button variant="ghost" size="icon" aria-label="Sign out" onClick={async()=>{await api("/api/auth/sign-out",{method:"POST",body:"{}"});location.href="/login";}}><LogOut/></Button>}</div></div></aside>;
+ <div className="sidebar-bottom"><p className="nav-caption">Manage</p><Link href="/settings" aria-current={settingsActive?"page":undefined} className={`settings-link${settingsActive?" active":""}`} onClick={closeMenu}><Settings size={18}/>Settings & integrations</Link>{workspace.verificationOnly&&<div className="email-setup-note"><Mail size={16} aria-hidden="true"/><div><strong>Email delivery is off</strong><p>Signing emails aren’t delivered in this test or email-disabled mode.</p>{workspace.role==="admin"?<Link href="/settings/email-jobs" onClick={closeMenu}>Setup Guide <ArrowUpRight size={12} aria-hidden="true"/></Link>:<p>Ask your administrator to configure delivery.</p>}</div></div>}<div className="user-block"><InitialsAvatar id={workspace.userId} fallback={demo?"SY":"ME"}/><div><strong>{demo?"Synthetic preview":"Your workspace"}</strong><small>{demo?"Display only":roleLabel}</small></div>{!demo&&<Button variant="ghost" size="icon" aria-label="Sign out" onClick={async()=>{await api("/api/auth/sign-out",{method:"POST",body:"{}"});location.href="/login";}}><LogOut/></Button>}</div></div></aside>;
  return <div className="app-layout">{sidebar()}
  <div className="app-main"><header className="topbar"><Dialog open={mobile} onOpenChange={setMobile}>
    <DialogTrigger asChild><Button variant="ghost" size="icon" className="mobile-menu" aria-label="Toggle menu"><Menu/></Button></DialogTrigger>
@@ -45,10 +49,10 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
      <DialogDescription className="sr-only">Navigate your Accord workspace.</DialogDescription>
      {sidebar("app-sidebar mobile-open")}
    </DialogContent>
- </Dialog><span className="breadcrumb">Workspace <span>/</span> <strong>{path.startsWith("/envelopes")?"Envelopes":path==="/"?"Overview":path==="/team"?"Team":path==="/settings"?"Settings":path.slice(1)}</strong></span><div className="topbar-right"><Badge variant="outline"><span className="status-dot"/>{workspace.verificationOnly?"Verification mode":"Email live"}</Badge><Button asChild variant="ghost" size="icon"><Link href="/settings" aria-label="Workspace setup"><Settings size={18}/></Link></Button></div></header>
- <main className="content-area">{loading?<div className="space-y-3" aria-live="polite"><Skeleton className="h-10 w-72"/><Skeleton className="h-40 w-full"/><p>Loading your workspace…</p></div>:error?<CardSetup error={error}/>:children}</main><footer className="app-footer"><span>Accord</span><span>Private documents. Clear evidence.</span></footer></div></div>;
+ </Dialog><span className="breadcrumb">Workspace <span>/</span> {settingsActive?<><Link href="/settings">Settings</Link>{settingsSection&&<><span>/</span><strong>{settingsSection.title}</strong></>}</>:<strong>{path.startsWith("/envelopes")?"Envelopes":path==="/"?"Overview":path==="/team"?"Team":path.slice(1)}</strong>}</span><div className="topbar-right"><Button asChild variant="ghost" size="icon"><Link href="/settings" aria-label="Workspace setup"><Settings size={18}/></Link></Button></div></header>
+ <main className="content-area">{error?<CardSetup error={error}/>:children}</main><footer className="app-footer"><span>Accord</span><span>Private documents. Clear evidence.</span></footer></div></div>;
 }
 export function PageHeading({eyebrow,title,description,action}:{eyebrow?:string;title:string;description:string;action?:ReactNode}){return <div className="page-heading"><div>{eyebrow&&<p className="eyebrow">{eyebrow}</p>}<h1>{title}</h1><p>{description}</p></div>{action}</div>;}
 export function Empty({title,children}:{title:string;children:ReactNode}){return <div className="empty-state"><Files/><h3>{title}</h3><p>{children}</p></div>;}
 
-function CardSetup({error}:{error:ApiError}){return <section className="setup-state"><Database size={32}/><p className="eyebrow">{error.status===401?"SIGNED OUT":"WORKSPACE SETUP"}</p><h1>{error.status===401?"Sign in to your company":"Your workspace needs a connection"}</h1><p>{error.status===401?"Sign in to access your company’s documents and signing records.":"Private documents and signing records require the project’s PostgreSQL database. Nothing is saved until setup is complete."}</p><ErrorNotice error={error}/><div className="flex flex-wrap gap-3"><Button asChild><Link href={error.status===401?"/login":"/settings"}>{error.status===401?"Sign in":"View setup steps"}</Link></Button><Button variant="outline" onClick={()=>location.reload()}>Check again</Button></div><p className="text-sm text-muted-foreground">Synthetic identities only · Email delivery is off</p></section>;}
+function CardSetup({error}:{error:ApiError}){return <section className="setup-state"><Database size={32}/><p className="eyebrow">{error.status===401?"SIGNED OUT":"WORKSPACE SETUP"}</p><h1>{error.status===401?"Sign in to your company":"Your workspace needs a connection"}</h1><p>{error.status===401?"Sign in to access your company’s documents and signing records.":"Private documents and signing records require the project’s PostgreSQL database. Nothing is saved until setup is complete."}</p><ErrorNotice error={error}/><div className="flex flex-wrap gap-3"><Button asChild><Link href={error.status===401?"/login":"/settings"}>{error.status===401?"Sign in":"View setup steps"}</Link></Button><Button variant="outline" onClick={()=>location.reload()}>Check again</Button></div><p className="text-sm text-muted-foreground">Contact your workspace administrator if you need access or help with setup.</p></section>;}
