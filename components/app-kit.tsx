@@ -1,5 +1,5 @@
 "use client";
-import { useEffect,useState,type ReactNode } from "react";
+import { useCallback,useEffect,useRef,useState,type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { settingsSections,settingsHref } from "@/app/settings/sections";
@@ -16,8 +16,18 @@ const emptyWorkspace: WorkspaceView = {company:{id:"",name:"Team workspace"},rol
 import type { WorkspaceView } from "@/lib/ui-types";
 export class ApiError extends Error {constructor(message:string,public code:string,public status:number){super(message);}}
 export async function api<T>(path:string,init:RequestInit={}):Promise<T> {const r=await fetch(path,{...init,headers:{...(init.body&&!(init.body instanceof File)?{"Content-Type":"application/json"}:{}),...init.headers}});const unreadable=Symbol(),value=await r.json().catch(()=>unreadable);if(!r.ok)throw new ApiError(value?.error??value?.message??`Request failed (HTTP ${r.status}). Reload and try again.`,value?.code??"REQUEST_FAILED",r.status);if(value===unreadable)throw new ApiError("The server returned an unreadable response. Reload and try again.","BAD_RESPONSE",r.status);return value;}
-export function useWorkspace(){const [workspace,setWorkspace]=useState(emptyWorkspace),[loading,setLoading]=useState(true),[error,setError]=useState<ApiError|null>(null);useEffect(()=>{api<WorkspaceView>("/api/workspace").then(setWorkspace).catch(setError).finally(()=>setLoading(false));},[]);return {workspace,loading,error,demo:false};}
-export function Choice({value,onChange,options,label}:{value:string;onChange:(v:string)=>void;options:{value:string;label:string}[];label:string}){return <Select value={value} onValueChange={onChange}><SelectTrigger aria-label={label} className="w-full"><SelectValue placeholder={label}/></SelectTrigger><SelectContent>{options.map(o=><SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent></Select>;}
+export function useWorkspace(){
+ const [workspace,setWorkspace]=useState(emptyWorkspace),[loading,setLoading]=useState(true),[error,setError]=useState<ApiError|null>(null),[refreshError,setRefreshError]=useState<ApiError|null>(null);
+ const request=useRef(0);
+ const refresh=useCallback(async()=>{
+  const current=++request.current;
+  try{const next=await api<WorkspaceView>("/api/workspace");if(current===request.current){setWorkspace(next);setError(null);setRefreshError(null);}}
+  catch(err){if(current===request.current)setRefreshError(err as ApiError);}
+ },[]);
+ useEffect(()=>{let active=true;api<WorkspaceView>("/api/workspace").then(next=>{if(active)setWorkspace(next);}).catch(err=>{if(active)setError(err);}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[]);
+ return {workspace,loading,error,refreshError,refresh,demo:false};
+}
+export function Choice({value,onChange,options,label,disabled=false}:{disabled?:boolean;value:string;onChange:(v:string)=>void;options:{value:string;label:string}[];label:string}){return <Select value={value} onValueChange={onChange} disabled={disabled}><SelectTrigger aria-label={label} className="w-full"><SelectValue placeholder={label}/></SelectTrigger><SelectContent>{options.map(o=><SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent></Select>;}
 export function ErrorNotice({error}:{error:Error|string|null}){return error?<Alert variant="destructive"><TriangleAlert/><AlertTitle>Action needed</AlertTitle><AlertDescription>{typeof error==="string"?error:error.message}</AlertDescription></Alert>:null;}
 export function Status({state}:{state:string}){return <Badge variant="outline" className={`status status-${state}`}><span className="status-dot"/>{({"part-signed":"Part signed",draft:"Draft",sent:"Awaiting signature",viewed:"Viewed",completed:"Completed",voided:"Voided",declined:"Declined",expired:"Expired"} as Record<string,string>)[state]??state}</Badge>;}
 const nav=[{label:"Overview",href:"/",icon:LayoutDashboard},{label:"Envelopes",href:"/envelopes",icon:Files},{label:"Team",href:"/team",icon:Users}];

@@ -24,7 +24,7 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import { Shell,ApiError } from "../components/app-kit";
 import { WorkspaceLoader } from "../components/accord-brand";
 import RouteLoading from "../app/loading";
-import { Composer } from "../components/composer";
+import { Composer,EnvelopeEditor } from "../components/composer";
 import { SettingsWorkspace,SettingsPage,SettingsNavigation,SettingsDeliveryLog,loadSettingsSection } from "../components/settings";
 import { settingsSections,settingsHref,canAccessSettingsSection,brandingSettingsPayload,webhookSettingsPayload,type SettingsSectionId } from "../app/settings/sections";
 import SettingsIndex from "../app/settings/page";
@@ -35,7 +35,8 @@ import DeliveryLogSettingsPage from "../app/settings/delivery-log/page";
 import WebhookSettingsPage from "../app/settings/webhook/page";
 import TemplatesSettingsPage from "../app/settings/templates/page";
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
-import type { RecipientView,WorkspaceView } from "../lib/ui-types";
+import { envelopePermissions,envelopeStepError,opensEnvelopeDrawer,envelopeForStep,mergeSavedEnvelopeStep,envelopeDraftPayload } from "../lib/envelope-wizard";
+import type { EnvelopeView,RecipientView,WorkspaceView } from "../lib/ui-types";
 
 test("branded loading shows only the existing star and a screen-reader status",()=>{
  const markup=renderToStaticMarkup(createElement(WorkspaceLoader));
@@ -226,6 +227,23 @@ test("recipient styles constrain labels and keep muted pills and circular avatar
  assert.equal(rules.get(".recipient-label")?.get("text-overflow"),"ellipsis");
  assert.equal(rules.get(".recipient-measurements")?.get("position"),"absolute");
  assert.equal(rules.get(".avatar-tiny")?.get("width"),"20px");
+});
+
+test("signed-in controls use muted borders, enabled hover and clear focus while errors take precedence",()=>{
+ const controls=".content-area :is([data-slot=input],[data-slot=select-trigger],textarea)",rules:postcss.Rule[]=[];
+ postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(rule=>{if(rule.selector.startsWith(controls))rules.push(rule);});
+ // :where keeps disabled guards weightless; the final error selector wins over hover/focus.
+ assert.deepEqual(rules.map(rule=>rule.selector),[
+  controls,
+  `${controls}:where(:not(:disabled,[aria-disabled=true],[data-disabled],[aria-invalid=true],.border-destructive)):hover`,
+  `${controls}:where(:not(:disabled,[aria-disabled=true],[data-disabled])):focus-visible`,
+  `${controls}:is([aria-invalid=true],.border-destructive)`,
+ ]);
+ const declarations=rules.map(rule=>{const values=new Map<string,string>();rule.walkDecls(declaration=>{values.set(declaration.prop,declaration.value);});return values;});
+ assert.deepEqual(declarations.map(values=>values.get("border-color")),["var(--border)","var(--input)","var(--ring)","var(--destructive)"]);
+ assert.equal(declarations[0].get("box-shadow"),"none");
+ assert.equal(declarations[2].get("outline"),"2px solid var(--ring)");assert.equal(declarations[2].get("outline-offset"),"2px");
+ for(const values of declarations)for(const property of ["color","opacity","pointer-events","cursor"])assert.equal(values.has(property),false);
 });
 
 test("workspace identity is a static muted card with only its name and a rounded-square building icon",()=>{
@@ -632,4 +650,58 @@ test("visibility filter separates active, archived and deleted envelopes (list a
   }
   assert.deepEqual([active, archived, deleted].map(e => matchesFilters(e, { visibility: "archived" })), [false, true, false]);
   assert.deepEqual([active, archived, deleted].map(e => matchesFilters(e, { visibility: "deleted" })), [false, false, true]);
+});
+
+
+const drawerEnvelope:EnvelopeView={id:"fixture-envelope",owner_id:"fixture-owner",title:"Fixture agreement",state:"draft",version:1,routing:"parallel",folder:"",tags:[],created_at:"2026-11-27T00:00:00Z",documents:[{id:"fixture-document",name:"Fixture.pdf",sha256:"fictional-digest",size:100,geometry:[{x:0,y:0,width:612,height:792,rotation:0}]}],recipients:[{id:"fixture-recipient",name:"Avery Morgan",email:"avery@client.test",routing_order:1,status:"pending"}],fields:[],events:[],outputs:[],deliveries:[]};
+const drawerWorkspace:WorkspaceView={company:{id:"fixture-company",name:"Northstar Studio"},role:"sender",userId:"fixture-owner",envelopes:[],verificationOnly:true,developmentLinks:false};
+
+test("wizard steps require a title, documents, recipients and complete signing assignments in order",()=>{
+ assert.equal(envelopeStepError({...drawerEnvelope,title:" "},0),"Enter an envelope title.");
+ assert.equal(envelopeStepError({...drawerEnvelope,documents:[],recipients:[]},0),null);
+ assert.match(envelopeStepError({...drawerEnvelope,documents:[]},1)??"",/Add at least one PDF/);
+ assert.equal(envelopeStepError({...drawerEnvelope,recipients:[]},1),null);
+ assert.match(envelopeStepError({...drawerEnvelope,recipients:[]},2)??"",/Add at least one recipient/);
+ assert.equal(envelopeStepError(drawerEnvelope,2),null);
+ assert.match(envelopeStepError(drawerEnvelope,3)??"",/required signature for every recipient/);
+ const signature:Field={id:"fixture-field",documentId:"fixture-document",recipientId:"fixture-recipient",type:"signature",page:0,x:20,y:20,width:180,height:40,required:true};
+ const ready={...drawerEnvelope,fields:[signature]};
+ assert.equal(envelopeStepError(ready,3),null);assert.equal(envelopeStepError(ready,4),null);
+ assert.match(envelopeStepError({...ready,fields:[{...signature,required:false}]},3)??"",/required signature/);
+ assert.match(envelopeStepError({...ready,documents:[...ready.documents,{...ready.documents[0],id:"unassigned-document"}]},3)??"",/every document/);
+ for(const changed of [{x:600},{documentId:"other-document"},{recipientId:"other-recipient"},{page:1}])assert.match(envelopeStepError({...ready,fields:[{...signature,...changed}]},3)??"",/Every field must fit/);
+});
+
+test("embedded editor retains owner and role gates and provides inline loading without a workspace shell",()=>{
+ for(const [role,owner,editable] of [["admin","another-owner",true],["sender","fixture-owner",true],["sender","another-owner",false],["read-only","fixture-owner",false]] as const){
+  const workspace={...drawerWorkspace,role},envelope={...drawerEnvelope,owner_id:owner};
+  assert.deepEqual(envelopePermissions(workspace,envelope),{canManage:editable,editable});
+  assert.deepEqual(envelopePermissions(workspace,{...envelope,state:"sent"}),{canManage:editable,editable:false});
+  const markup=renderToStaticMarkup(createElement(EnvelopeEditor,{id:envelope.id,workspace,initialEnvelope:envelope,embedded:true}));
+  assert.equal(markup.includes("Save draft"),editable);assert.equal(markup.includes("Review &amp; freeze for signing"),editable);
+  assert.equal(markup.includes("Sharing"),editable);assert.equal(markup.includes("Reusable template"),editable);
+  assert.match(markup,/1. Documents &amp; details/);assert.match(markup,/2. Recipients &amp; routing/);assert.match(markup,/Activity · UTC/);
+  assert.doesNotMatch(markup,/app-sidebar|workspace-loading|All envelopes|app-layout/);
+ }
+ const loading=renderToStaticMarkup(createElement(EnvelopeEditor,{id:"fixture-envelope",workspace:drawerWorkspace,embedded:true}));
+ assert.match(loading,/role="status">Loading envelope/);assert.doesNotMatch(loading,/workspace-loading|app-layout|app-sidebar/);
+ const frozen=renderToStaticMarkup(createElement(EnvelopeEditor,{id:drawerEnvelope.id,workspace:drawerWorkspace,initialEnvelope:{...drawerEnvelope,state:"sent"},embedded:true}));
+ assert.doesNotMatch(frozen,/Save draft|Review &amp; freeze for signing/);assert.match(frozen,/Reminders &amp; links|Signing &amp; evidence/);
+});
+
+test("drawer links keep modified clicks and new-tab behavior while ordinary clicks embed the editor",()=>{
+ const click={button:0,metaKey:false,ctrlKey:false,shiftKey:false,altKey:false,defaultPrevented:false};
+ assert.equal(opensEnvelopeDrawer(click),true);
+ for(const changed of [{button:1},{button:2},{metaKey:true},{ctrlKey:true},{shiftKey:true},{altKey:true},{defaultPrevented:true}])assert.equal(opensEnvelopeDrawer({...click,...changed}),false);
+});
+
+
+test("saving earlier wizard steps retains unfinished later inputs without submitting them",()=>{
+ const saved={...drawerEnvelope,recipients:[],fields:[],version:4};
+ const later={...drawerEnvelope,version:5,title:"Renamed fixture",folder:"New folder",recipients:[{...drawerEnvelope.recipients[0],name:"",email:"unfinished",accessCode:"secret-code"}],fields:[{id:"new-field",documentId:"fixture-document",recipientId:"fixture-recipient",type:"signature" as const,page:0,x:900,y:20,width:180,height:40,required:true}]};
+ const title=envelopeForStep(later,saved,0);assert.equal(title.title,later.title);assert.equal(title.version,5);assert.equal(title.folder,saved.folder);assert.deepEqual(title.recipients,[]);assert.deepEqual(title.fields,[]);
+ const documents=envelopeForStep(later,saved,1);assert.equal(documents.folder,later.folder);assert.deepEqual(documents.recipients,[]);assert.deepEqual(documents.fields,[]);
+ const merged=mergeSavedEnvelopeStep(later,{...documents,version:6},1);assert.equal(merged.version,6);assert.equal(merged.id,later.id);assert.deepEqual(merged.documents,later.documents);assert.deepEqual(merged.recipients,later.recipients);assert.deepEqual(merged.fields,later.fields);
+ assert.deepEqual(envelopeDraftPayload(merged).recipients[0],{id:"fixture-recipient",name:"",email:"unfinished",order:1,accessCode:"secret-code"});
+ assert.deepEqual(envelopeForStep(later,saved,2).recipients,later.recipients);assert.deepEqual(envelopeForStep(later,saved,2).fields,[]);assert.deepEqual(envelopeForStep(later,saved,3).fields,later.fields);
 });

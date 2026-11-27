@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ErrorNotice } from "./app-kit";
 import { deliveryText } from "./bulk-send";
 import { Button } from "./ui/button";
@@ -8,12 +8,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 
+import type { EnvelopeGuard } from "@/lib/envelope-wizard";
+
 type Copy = { email:string; state:"awaiting_completion"|"active"|"revoked"|"expired"; expiresAt:string|null; delivery:string|null };
 type Result = { version:number; copy:Copy|null };
 const states = { awaiting_completion:"Waiting for all signers", active:"Link active", revoked:"Link revoked", expired:"Link expired" };
 
-export function CompletionCopy({id,version,state,disabled,onSaved}:{
-  id:string; version:number; state:string; disabled:boolean; onSaved:(result:Result)=>void;
+export function CompletionCopy({id,version,state,disabled,onSaved,onGuardChange}:{
+  id:string; version:number; state:string; disabled:boolean; onSaved:(result:Result)=>void; onGuardChange?:(guard:EnvelopeGuard)=>void;
 }) {
   const [result,setResult]=useState<Result|null>(null);
   const [email,setEmail]=useState("");
@@ -21,7 +23,9 @@ export function CompletionCopy({id,version,state,disabled,onSaved}:{
   const [working,setWorking]=useState(false);
   const [notice,setNotice]=useState("");
   const url=`/api/envelopes/${id}/completion-copy`;
-  const copy=result?.copy;
+  const copy=result?.copy,operation=useRef(false);
+  const dirty=!!result&&state==="draft"&&email.trim()!==(copy?.email??"");
+  useEffect(()=>{onGuardChange?.({dirty,busy:working});},[dirty,working,onGuardChange]);
   useEffect(()=>{
     let active=true;
     api<Result>(url).then(next=>{
@@ -30,11 +34,11 @@ export function CompletionCopy({id,version,state,disabled,onSaved}:{
     return()=>{active=false;};
   },[url,state]);
   async function update(body:unknown,label:string) {
-    setWorking(true);setError(null);setNotice("");
+    if(operation.current||disabled)return;operation.current=true;setWorking(true);onGuardChange?.({dirty,busy:true});setError(null);setNotice("");
     try {
       const next=await api<Result>(url,{method:"POST",body:JSON.stringify(body)});
       setResult(next);setEmail(next.copy?.email??"");onSaved(next);setNotice(label);
-    }catch(err){setError(err as Error);}finally{setWorking(false);}
+    }catch(err){setError(err as Error);}finally{operation.current=false;setWorking(false);}
   }
   return <Card><CardHeader><CardTitle>Completion copy recipient</CardTitle></CardHeader>
     <CardContent className="form-stack">
@@ -54,7 +58,7 @@ export function CompletionCopy({id,version,state,disabled,onSaved}:{
         {state==="completed"&&<div className="flex flex-wrap gap-2">
           {copy.state==="active"&&<Button variant="outline" disabled={disabled||working} onClick={()=>void update({action:"revoke"},"Copy link revoked.")}>Revoke copy link</Button>}
           {(copy.state==="revoked"||copy.state==="expired")&&<Button variant="outline" disabled={disabled||working} onClick={()=>void update({action:"renew"},"Replacement copy link authorized.")}>Renew copy link</Button>}
-          <Button variant="ghost" disabled={disabled||working} onClick={async()=>{setError(null);setWorking(true);try{setResult(await api<Result>(url));}catch(err){setError(err as Error);}finally{setWorking(false);}}}>Refresh copy status</Button>
+          <Button variant="ghost" disabled={disabled||working} onClick={async()=>{setError(null);setWorking(true);try{setResult(await api<Result>(url));}catch(err){setError(err as Error);}finally{operation.current=false;setWorking(false);}}}>Refresh copy status</Button>
         </div>}
       </>}
       {!copy&&state!=="draft"&&<p>No completion copy recipient was configured.</p>}
