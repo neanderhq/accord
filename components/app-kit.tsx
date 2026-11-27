@@ -3,7 +3,7 @@ import { useEffect,useState,type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { settingsSections,settingsHref } from "@/app/settings/sections";
-import { LayoutDashboard,Files,Users,Settings,ArrowUpRight,Mail,ChevronDown,Database,LogOut,Menu,TriangleAlert } from "lucide-react";
+import { LayoutDashboard,Files,Users,Settings,ArrowUpRight,Mail,Building2,Database,LogOut,Menu,TriangleAlert } from "lucide-react";
 import { AccordBrand,WorkspaceLoader } from "@/components/accord-brand";
 import { InitialsAvatar } from "@/components/initials-avatar";
 import { AuthFrame } from "@/components/auth-frame";
@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { Alert,AlertTitle,AlertDescription } from "@/components/ui/alert";
 import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { DropdownMenu,DropdownMenuTrigger,DropdownMenuContent,DropdownMenuItem } from "@/components/ui/dropdown-menu";
 const emptyWorkspace: WorkspaceView = {company:{id:"",name:"Team workspace"},role:"",userId:"",envelopes:[],verificationOnly:true,developmentLinks:false};
 import type { WorkspaceView } from "@/lib/ui-types";
 export class ApiError extends Error {constructor(message:string,public code:string,public status:number){super(message);}}
@@ -38,7 +37,7 @@ export function Shell({children,workspace=emptyWorkspace,demo=false,loading=fals
  if(error?.status===401)return <AuthFrame><CardSetup error={error}/></AuthFrame>;
  if(loading&&!error)return <WorkspaceLoader/>;
  const sidebar = (className = "app-sidebar") => <aside className={className}><Link href="/" className="brand-link" onClick={closeMenu}><AccordBrand/></Link>
- <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" className="workspace-switch" aria-label={`Workspace menu for ${companyName}`}><InitialsAvatar id={workspace.company.id} name={companyName} fallback="A"/><span className="workspace-identity"><strong>{companyName}</strong><small>{demo?"Demo workspace":roleLabel+" workspace"}</small></span><ChevronDown className="workspace-chevron" aria-hidden="true"/></Button></DropdownMenuTrigger><DropdownMenuContent align="start" sideOffset={6} className="workspace-menu"><DropdownMenuItem asChild><Link href="/settings" onClick={closeMenu}><Settings aria-hidden="true"/>Workspace settings</Link></DropdownMenuItem><DropdownMenuItem asChild><Link href="/team" onClick={closeMenu}><Users aria-hidden="true"/>Team</Link></DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+ <div className="workspace-card"><span className="workspace-icon" aria-hidden="true"><Building2 size={18}/></span><span className="workspace-identity"><strong>{companyName}</strong></span></div>
  <p className="nav-caption">Workspace</p><nav aria-label="Main navigation">{nav.map(n=>{const active=path===n.href||(n.href==="/envelopes"&&path.startsWith("/envelopes/"));return <Link key={n.href} onClick={closeMenu} href={n.href} aria-current={active?"page":undefined} className={active?"active":""}><n.icon size={18}/>{n.label}{n.label==="Envelopes"&&<span className="nav-count">{workspace.envelopes.length}</span>}</Link>;})}</nav>
  <div className="sidebar-bottom"><p className="nav-caption">Manage</p><Link href="/settings" aria-current={settingsActive?"page":undefined} className={`settings-link${settingsActive?" active":""}`} onClick={closeMenu}><Settings size={18}/>Settings & integrations</Link>{workspace.verificationOnly&&<div className="email-setup-note"><Mail size={16} aria-hidden="true"/><div><strong>Email delivery is off</strong><p>Signing emails aren’t delivered in this test or email-disabled mode.</p>{workspace.role==="admin"?<Link href="/settings/email-jobs" onClick={closeMenu}>Setup Guide <ArrowUpRight size={12} aria-hidden="true"/></Link>:<p>Ask your administrator to configure delivery.</p>}</div></div>}<div className="user-block"><InitialsAvatar id={workspace.userId} fallback={demo?"SY":"ME"}/><div><strong>{demo?"Synthetic preview":"Your workspace"}</strong><small>{demo?"Display only":roleLabel}</small></div>{!demo&&<Button variant="ghost" size="icon" aria-label="Sign out" onClick={async()=>{await api("/api/auth/sign-out",{method:"POST",body:"{}"});location.href="/login";}}><LogOut/></Button>}</div></div></aside>;
  return <div className="app-layout">{sidebar()}

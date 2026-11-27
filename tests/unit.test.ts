@@ -18,6 +18,9 @@ import { matchesFilters } from "../lib/filters";
 import { AVATAR_PALETTE,avatarColor,avatarInitials } from "../lib/avatar";
 import { InitialsAvatar } from "../components/initials-avatar";
 import { DocumentCover,EnvelopeRecipients } from "../components/dashboard";
+import { RecipientPill,RecipientOverflowList } from "../components/envelope-recipients";
+import { recipientDisplay,packRecipientRows } from "../lib/recipient-layout";
+import { TooltipProvider } from "../components/ui/tooltip";
 import { Shell,ApiError } from "../components/app-kit";
 import { WorkspaceLoader } from "../components/accord-brand";
 import RouteLoading from "../app/loading";
@@ -151,39 +154,112 @@ test("document covers remain stable across renders and ordering, with varied dec
 
 test("recipient avatars use email identity across envelopes and names when no email is available",()=>{
  const recipient:RecipientView={id:"recipient-first-envelope",name:"Avery Morgan",email:"avery@client.test",routing_order:1,status:"pending"};
- const render=(value:RecipientView)=>renderToStaticMarkup(createElement(EnvelopeRecipients,{recipients:[value]}));
- const colors=(markup:string)=>markup.match(/class="avatar avatar-small"[^>]*style="([^"]+)"/)?.[1];
+ const render=(value:RecipientView)=>renderToStaticMarkup(createElement(RecipientPill,{recipient:value}));
+ const colors=(markup:string)=>markup.match(/class="avatar avatar-tiny"[^>]*style="([^"]+)"/)?.[1];
  const original=render(recipient);
  assert.ok(colors(original));assert.match(original,/>AM<\/span>/);
- assert.ok(original.includes(recipient.name));assert.ok(original.includes(recipient.email));
+ assert.ok(original.includes(recipient.name));assert.ok(!original.includes(recipient.email));
  assert.equal(colors(render({...recipient,id:"recipient-other-envelope",name:"Avery Renamed",email:" AVERY@client.test "})),colors(original));
  assert.equal(colors(render({...recipient,email:"",name:" Avery  Morgan "})),colors(render({...recipient,id:"different-id",email:" ",name:"avery morgan"})));
  assert.match(render({...recipient,email:"",name:""}),/>\?<\/span>/);
 });
 
-test("recipient list preserves the first two names and emails, reports additional people and handles empty lists",()=>{
+test("recipient pills choose one trimmed label, with email and safe blank fallbacks",()=>{
+ for(const [value,expected] of [
+  [{name:"  Avery Morgan  ",email:" avery@client.test "},"Avery Morgan"],
+  [{name:" \t ",email:" avery@client.test "},"avery@client.test"],
+  [{name:" ",email:"\n"},"Recipient"],
+  [{name:null,email:undefined},"Recipient"],
+ ] as const)assert.equal(recipientDisplay(value).label,expected);
+ const markup=renderToStaticMarkup(createElement(RecipientPill,{recipient:{id:"r",name:" ",email:" avery@client.test ",routing_order:1,status:"pending"}}));
+ assert.match(markup,/<span class="recipient-label">avery@client.test<\/span>/);
+ assert.doesNotMatch(markup,/<small|recipient-details/);
+});
+
+test("recipient packing fits as many measured pills as two rows allow and reserves exact +N space",()=>{
+ const fit=(widths:number[],width:number,more=30)=>packRecipientRows(widths,width,6,()=>more);
+ assert.deepEqual(fit([],200),{visibleCount:0,hiddenCount:0,firstRowCount:0});
+ assert.deepEqual(fit([90],200),{visibleCount:1,hiddenCount:0,firstRowCount:1});
+ assert.deepEqual(fit(Array(6).fill(40),200),{visibleCount:6,hiddenCount:0,firstRowCount:4});
+ assert.deepEqual(fit(Array(9).fill(40),200),{visibleCount:7,hiddenCount:2,firstRowCount:4});
+ assert.deepEqual(fit(Array(5).fill(70),160),{visibleCount:3,hiddenCount:2,firstRowCount:2});
+ assert.deepEqual(fit([500,500,500],180),{visibleCount:1,hiddenCount:2,firstRowCount:1});
+ assert.deepEqual(fit([40,40],0),{visibleCount:0,hiddenCount:2,firstRowCount:0});
+ // A digit boundary changes the counter width; use the actual hidden count.
+ assert.deepEqual(packRecipientRows(Array(12).fill(40),100,6,hidden=>hidden>=10?54:24),{visibleCount:3,hiddenCount:9,firstRowCount:2});
+});
+
+test("recipient packing responds to resize and changed font or label measurements",()=>{
+ const widths=Array(9).fill(40),fit=(width:number)=>packRecipientRows(widths,width,6,()=>30);
+ assert.deepEqual([fit(100).visibleCount,fit(200).visibleCount,fit(400).visibleCount,fit(100).visibleCount],[3,7,9,3]);
+ assert.equal(packRecipientRows(Array(9).fill(80),200,6,()=>30).visibleCount,3);
+ assert.equal(packRecipientRows([1000],50,6,()=>30).hiddenCount,0);
+ // Every recipient is either rendered once or counted in +N, including large lists.
+ const large=packRecipientRows(Array(1000).fill(40),200,6,hidden=>String(hidden).length*8+18);
+ assert.equal(large.visibleCount+large.hiddenCount,1000);assert.equal(large.visibleCount,7);
+});
+
+test("recipient overflow and truncated labels expose accessible buttons without hidden focus targets",()=>{
  const recipients:RecipientView[]=Array.from({length:5},(_,index)=>({id:`recipient-${index}`,name:`Person ${index}`,email:`person${index}@client.test`,routing_order:index+1,status:"pending"}));
  const markup=renderToStaticMarkup(createElement(EnvelopeRecipients,{recipients}));
- for(const r of recipients.slice(0,2)){assert.ok(markup.includes(r.name));assert.ok(markup.includes(r.email));}
- assert.equal((markup.match(/class="avatar avatar-small"/g)??[]).length,2);
- assert.match(markup,/\+3 more/);assert.ok(!markup.includes(recipients[2].email));
+ // Until browser measurements are available, all recipients have one disclosure.
+ assert.match(markup,/<button[^>]*aria-label="Show 5 more recipients"[^>]*aria-haspopup="dialog"[^>]*>\+5<\/button>/);
+ const measurements=markup.slice(markup.indexOf('class="recipient-measurements"'));
+ assert.match(measurements,/aria-hidden="true" inert=""/);assert.doesNotMatch(measurements,/<button|tabindex|<a\b/);
+ const overflow=renderToStaticMarkup(createElement(RecipientOverflowList,{recipients}));
+ assert.equal((overflow.match(/<li>/g)??[]).length,5);
+ assert.equal((overflow.match(/class="avatar avatar-tiny"/g)??[]).length,5);
+ for(const r of recipients){assert.ok(overflow.includes(r.name));assert.ok(!overflow.includes(r.email));}
+ const long={...recipients[0],name:"A very long recipient name ".repeat(30)};
+ const truncated=renderToStaticMarkup(createElement(TooltipProvider,null,createElement(RecipientPill,{recipient:long,truncated:true})));
+ assert.ok(truncated.includes(`aria-label="${long.name.trim()}"`));assert.match(truncated,/aria-haspopup="dialog"/);
  const empty=renderToStaticMarkup(createElement(EnvelopeRecipients,{recipients:[]}));
  assert.match(empty,/Not added/);assert.doesNotMatch(empty,/class="avatar/);
 });
 
-test("signed-in shell offers a real workspace menu, readable roles and one conditional email setup notice",()=>{
+test("recipient styles constrain labels and keep muted pills and circular avatars borderless",()=>{
+ const rules=new Map<string,Map<string,string>>();
+ postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(rule=>{
+  const declarations=new Map<string,string>();rule.walkDecls(declaration=>{declarations.set(declaration.prop,declaration.value);});rules.set(rule.selector,declarations);
+ });
+ for(const [property,value] of [["border","0"],["box-shadow","none"],["background","var(--muted)"],["max-width","min(100%,200px)"]])assert.equal(rules.get(".recipient-pill")?.get(property),value);
+ assert.equal(rules.get(".recipient-label")?.get("text-overflow"),"ellipsis");
+ assert.equal(rules.get(".recipient-measurements")?.get("position"),"absolute");
+ assert.equal(rules.get(".avatar-tiny")?.get("width"),"20px");
+});
+
+test("workspace identity is a static muted card with only its name and a rounded-square building icon",()=>{
+ for(const role of ["admin","sender","read-only",""])for(const demo of [false,true]){
+  const workspace:WorkspaceView={company:{id:"northstar",name:"Northstar Studio"},role,userId:"fixture-user",envelopes:[],verificationOnly:false,developmentLinks:false};
+  const markup=renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/"},createElement(Shell,{workspace,demo,children:"Workspace content"})));
+  const card=markup.match(/<div class="workspace-card">.*?<\/div>/)?.[0];
+  assert.ok(card);assert.equal(card.replace(/<[^>]*>/g,""),"Northstar Studio");
+  assert.match(card,/<span class="workspace-icon" aria-hidden="true"><svg[^>]*class="[^"]*lucide-building-2[^"]*"/);
+  assert.doesNotMatch(card,/<a\b|<button\b|<small\b|\b(?:role|tabindex|href|aria-haspopup|aria-expanded|disabled)=|avatar|chevron/);
+  assert.doesNotMatch(markup,/aria-haspopup="menu"|workspace-switch|workspace-chevron|workspace-menu for/i);
+ }
+ const rules=new Map<string,Map<string,string>>();
+ postcss.parse(readFileSync(new URL("../app/style.css",import.meta.url),"utf8")).walkRules(rule=>{
+  const declarations=new Map<string,string>();rule.walkDecls(declaration=>{declarations.set(declaration.prop,declaration.value);});rules.set(rule.selector,declarations);
+ });
+ assert.equal(rules.get(".workspace-card")?.get("background"),"color-mix(in srgb,var(--secondary) 75%,var(--card))");
+ assert.equal(rules.get(".workspace-card")?.get("border-radius"),"10px");
+ for(const [property,value] of [["display","grid"],["place-items","center"],["width","36px"],["height","36px"],["border-radius","8px"],["background","var(--muted)"]])assert.equal(rules.get(".workspace-icon")?.get(property),value);
+});
+
+test("signed-in shell keeps readable footer roles, navigation and one conditional email setup notice",()=>{
  const workspace:WorkspaceView={company:{id:"northstar",name:"Northstar Studio"},role:"admin",userId:"administrator",envelopes:[],verificationOnly:true,developmentLinks:false};
  const render=(value:WorkspaceView)=>renderToStaticMarkup(createElement(PathnameContext.Provider,{value:"/settings"},createElement(Shell,{workspace:value,children:"Workspace content"})));
  const markup=render(workspace);
- assert.match(markup,/<button[^>]*aria-label="Workspace menu for Northstar Studio"[^>]*aria-haspopup="menu"/);
- assert.match(markup,/Administrator workspace/);assert.match(markup,/aria-label="Sign out"/);
+ assert.match(markup,/<small>Administrator<\/small>/);assert.match(markup,/aria-label="Sign out"/);
+ assert.match(markup,/<nav aria-label="Main navigation">.*?href="\/team"/);
  assert.match(markup,/aria-current="page"[^>]*class="settings-link active"/);
  assert.equal((markup.match(/class="email-setup-note"/g)??[]).length,1);
  assert.match(markup,/Email delivery is off/);assert.match(markup,/test or email-disabled mode/);assert.match(markup,/href="\/settings\/email-jobs"[^>]*>Setup Guide/);
  assert.doesNotMatch(markup,/Verification mode|Verification workspace|Synthetic records|Live workspace|Email live|workspace-footnote/);
  const enabled=render({...workspace,verificationOnly:false});
  assert.doesNotMatch(enabled,/email-setup-note|Email delivery is off|Email live|delivered by email/);
- for(const [role,label] of [["sender","Sender"],["read-only","Viewer"]])assert.ok(render({...workspace,role}).includes(`${label} workspace`));
+ for(const [role,label] of [["sender","Sender"],["read-only","Viewer"]])assert.ok(render({...workspace,role}).includes(`<small>${label}</small>`));
 });
 
 test("all six Settings routes select their own page and the index redirects to Contacts",()=>{
